@@ -326,15 +326,14 @@ export default function ConfigPage() {
         <CardContent className="space-y-3">
           <div className="space-y-1">
             <Input
-              placeholder="GitHub 镜像前缀（可选，如 https://ghproxy.com/）"
+              placeholder="GitHub 镜像前缀（可选，如 https://gh-proxy.com/）"
               value={masterMirrorUrl}
               onChange={(e) => setMasterMirrorUrl(e.target.value)}
               className="h-8 text-xs"
             />
             <div className="flex flex-wrap gap-1">
               {([
-                { label: "ghproxy.com", url: "https://ghproxy.com/" },
-                { label: "mirror.ghproxy.com", url: "https://mirror.ghproxy.com/" },
+                { label: "gh-proxy.com", url: "https://gh-proxy.com/" },
                 { label: "ghfast.top", url: "https://ghfast.top/" },
                 { label: "moeyy.xyz", url: "https://github.moeyy.xyz/" },
               ]).map((preset) => (

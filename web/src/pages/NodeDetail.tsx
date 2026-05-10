@@ -751,7 +751,7 @@ export default function NodeDetail() {
               <Label className="text-sm uppercase text-muted-foreground">安装命令</Label>
               <div className="mt-2 mb-2">
                 <Input
-                  placeholder="GitHub 镜像前缀（可选，如 https://ghproxy.com/）"
+                  placeholder="GitHub 镜像前缀（可选，如 https://gh-proxy.com/）"
                   value={mirrorUrl}
                   onChange={(e) => setMirrorUrl(e.target.value)}
                   className="h-8 text-xs"
