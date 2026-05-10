@@ -387,7 +387,7 @@ _install_native_timescaledb() {
 
   # 添加 TimescaleDB apt 源
   curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey \
-    | gpg --dearmor -o /etc/apt/trusted.gpg.d/timescaledb.gpg 2>/dev/null \
+    | gpg --yes --dearmor -o /etc/apt/trusted.gpg.d/timescaledb.gpg 2>/dev/null \
     || { warn "无法获取 TimescaleDB GPG key，跳过"; return 0; }
 
   local distro
