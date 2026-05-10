@@ -151,14 +151,24 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         )
         .route("/api/v1/auth/me", get(get_me))
         .route("/api/v1/auth/me/password", post(change_own_password))
-        .route("/api/v1/events/forwards", get(forward_stats_stream));
+        .route("/api/v1/events/forwards", get(forward_stats_stream))
+        .route("/api/v1/forwards/:id/stats", get(forward_stats_history));
 
     let protected = admin
         .merge(user)
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let public = Router::new()
-        .route("/health", get(|| async { "ok" }))
+        .route(
+            "/health",
+            get(|| async {
+                (
+                    StatusCode::OK,
+                    [(axum::http::header::CACHE_CONTROL, "no-store")],
+                    "ok",
+                )
+            }),
+        )
         .route("/api/v1/status", get(public_status))
         .route("/api/v1/status/stream", get(public_status_stream))
         .route("/api/v1/auth/status", get(auth_status))
@@ -3514,6 +3524,66 @@ async fn forward_stats_stream(
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
+// ── 转发历史流量统计 ───────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct StatsHistoryQuery {
+    /// "1h"（默认）| "24h" | "7d"
+    period: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct StatsBucket {
+    ts: DateTime<Utc>,
+    bytes_in: i64,
+    bytes_out: i64,
+    peak_conns: i32,
+}
+
+async fn forward_stats_history(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Query(q): Query<StatsHistoryQuery>,
+) -> ApiResult<Json<Vec<StatsBucket>>> {
+    let (bucket, since) = match q.period.as_deref() {
+        Some("7d") => ("1 hour", "7 days"),
+        Some("24h") => ("5 minutes", "24 hours"),
+        _ => ("1 minute", "1 hour"),
+    };
+
+    let rows = sqlx::query(
+        "SELECT
+             time_bucket($1::interval, ts) AS ts,
+             SUM(bytes_in)::BIGINT         AS bytes_in,
+             SUM(bytes_out)::BIGINT        AS bytes_out,
+             MAX(peak_conns)::INT          AS peak_conns
+         FROM forward_stats
+         WHERE forward_id = $2
+           AND ts >= now() - $3::interval
+         GROUP BY 1
+         ORDER BY 1",
+    )
+    .bind(bucket)
+    .bind(id)
+    .bind(since)
+    .fetch_all(&s.db)
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+
+    use sqlx::Row;
+    let buckets: Vec<StatsBucket> = rows
+        .iter()
+        .map(|r| StatsBucket {
+            ts: r.get("ts"),
+            bytes_in: r.get("bytes_in"),
+            bytes_out: r.get("bytes_out"),
+            peak_conns: r.get("peak_conns"),
+        })
+        .collect();
+
+    Ok(Json(buckets))
+}
+
 async fn public_status_stream(
     State(s): State<AppState>,
 ) -> Sse<impl futures_core::Stream<Item = Result<Event, Infallible>>> {
@@ -4205,12 +4275,6 @@ async fn upgrade_self_handler(
     require_admin(&claims)?;
 
     const REQ_PATH: &str = "/var/lib/relay-master/upgrade-request.json";
-    if std::path::Path::new(REQ_PATH).exists() {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "已有进行中的升级，请稍候",
-        ));
-    }
 
     let resolved =
         s.upgrade_resolver.resolve(&req.target).await.map_err(|e| {
@@ -4234,12 +4298,30 @@ async fn upgrade_self_handler(
         "asset_url_arm64": arm64_url,
         "sha256_url": sha_url,
     });
-    std::fs::write(REQ_PATH, body.to_string()).map_err(|e| {
-        ApiError::new(
+
+    // O_CREAT|O_EXCL 原子写，并发请求只有一个能成功
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(REQ_PATH)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                ApiError::new(StatusCode::CONFLICT, "已有进行中的升级，请稍候")
+            } else {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("写入升级请求失败：{e}"),
+                )
+            }
+        })?;
+    if let Err(e) = f.write_all(body.to_string().as_bytes()) {
+        let _ = std::fs::remove_file(REQ_PATH);
+        return Err(ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("写入升级请求失败：{e}"),
-        )
-    })?;
+        ));
+    }
 
     Ok((
         StatusCode::ACCEPTED,

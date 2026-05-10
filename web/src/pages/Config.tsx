@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { Copy, Check, Play, RefreshCw, FolderSearch, Rocket } from "lucide-react";
@@ -60,6 +60,13 @@ export default function ConfigPage() {
   const [selfUpgrading, setSelfUpgrading] = useState(false);
   const [upgradeConfirmOpen, setUpgradeConfirmOpen] = useState(false);
   const [selfUpgradeTarget, setSelfUpgradeTarget] = useState<"stable" | "rc">("stable");
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pollRef.current !== null) clearInterval(pollRef.current);
+    };
+  }, []);
 
   const effectiveEnabled = enabled ?? cfg?.announcement_enabled ?? false;
   const effectiveTitle = title ?? cfg?.announcement_title ?? "";
@@ -126,18 +133,21 @@ export default function ConfigPage() {
       setSelfUpgrading(false);
       return;
     }
-    // Master is restarting — poll /health until it comes back, then reload
-    const poll = setInterval(async () => {
-      try {
-        const r = await fetch("/health");
-        if (r.ok) {
-          clearInterval(poll);
-          window.location.reload();
+    // Master is restarting — 等 15s 让 updater 把旧进程停掉再开始轮询
+    setTimeout(() => {
+      pollRef.current = setInterval(async () => {
+        try {
+          const r = await fetch("/health", { cache: "no-store" });
+          if (r.ok) {
+            clearInterval(pollRef.current!);
+            pollRef.current = null;
+            window.location.reload();
+          }
+        } catch {
+          // still restarting
         }
-      } catch {
-        // still restarting
-      }
-    }, 2000);
+      }, 2000);
+    }, 15_000);
   };
 
   const effectiveBrand = brandDraft ?? branding?.brand_name ?? "RELAY";

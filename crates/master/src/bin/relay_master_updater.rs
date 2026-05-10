@@ -241,11 +241,21 @@ fn rollback(prev_target: Option<&PathBuf>) {
     if let Some(prev) = prev_target {
         if prev.exists() {
             if let Some(p) = prev.to_str() {
-                let _ = atomic_symlink(p, BIN_LINK);
+                if let Err(e) = atomic_symlink(p, BIN_LINK) {
+                    warn(&format!(
+                        "rollback symlink failed: {e:#}; service may stay down"
+                    ));
+                    return;
+                }
             }
+        } else {
+            warn("previous binary path no longer exists; cannot roll back");
+            return;
         }
     }
-    systemctl(&["restart", UNIT]);
+    if !systemctl(&["restart", UNIT]) {
+        warn("rollback restart failed; service may stay down");
+    }
 }
 
 async fn do_upgrade(req: &UpgradeRequest) -> Result<()> {
@@ -256,6 +266,9 @@ async fn do_upgrade(req: &UpgradeRequest) -> Result<()> {
         if !is_allowed_url(url) {
             bail!("URL host not allowed: {url}");
         }
+    }
+    if !req.sha256_url.ends_with("/SHA256SUMS") {
+        bail!("sha256_url must end with /SHA256SUMS");
     }
 
     let arch = detect_arch()?;
@@ -295,8 +308,12 @@ async fn do_upgrade(req: &UpgradeRequest) -> Result<()> {
     atomic_write(&master_bin, &dest_bin, 0o755).context("install relay-master binary")?;
 
     if let Some(updater_bin) = extract_binary_from_tar(&tar_data, "relay-master-updater") {
-        log("self-updating relay-master-updater");
-        let _ = atomic_write(&updater_bin, SELF_PATH, 0o755);
+        match atomic_write(&updater_bin, SELF_PATH, 0o755) {
+            Ok(()) => log("self-updated relay-master-updater"),
+            Err(e) => warn(&format!(
+                "failed to self-update relay-master-updater: {e:#}"
+            )),
+        }
     }
 
     let prev_target = fs::read_link(BIN_LINK).ok();

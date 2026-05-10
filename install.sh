@@ -153,6 +153,8 @@ BIN_NAME="relay-master"
 UNIT_NAME="relay-master"
 ETC_DIR="/etc/relay-master"
 ENV_FILE="$ETC_DIR/relay-master.env"
+LIB_DIR="/usr/local/lib/relay-master"
+BIN_LINK="/usr/local/bin/relay-master"
 COMPOSE_FILE="$ETC_DIR/docker-compose.postgres.yml"
 COMPOSE_ENV_FILE="$ETC_DIR/postgres.env"
 REDIS_COMPOSE_FILE="$ETC_DIR/docker-compose.redis.yml"
@@ -286,7 +288,7 @@ if [[ "$VERSION" == "latest" ]]; then
   fi
 fi
 
-ARCHIVE="relay-${VERSION}-${TARGET}.tar.gz"
+ARCHIVE="relay-master-${VERSION}-${TARGET}.tar.gz"
 BASE="https://github.com/$REPO/releases/download/$VERSION"
 
 log "installing relay-master $VERSION for $TARGET"
@@ -303,7 +305,7 @@ log "verifying sha256"
   || die "checksum mismatch"
 
 tar -xzf "$TMP/$ARCHIVE" -C "$TMP"
-DIR="$TMP/relay-${VERSION}-${TARGET}"
+DIR="$TMP/relay-master-${VERSION}-${TARGET}"
 [[ -f "$DIR/$BIN_NAME" ]] || die "$BIN_NAME not found in archive"
 
 RESTART=0
@@ -313,8 +315,12 @@ if systemctl is-active --quiet "$UNIT_NAME" 2>/dev/null; then
   RESTART=1
 fi
 
-log "installing /usr/local/bin/$BIN_NAME"
-install -m 0755 "$DIR/$BIN_NAME" "/usr/local/bin/$BIN_NAME"
+log "installing $LIB_DIR/$BIN_NAME"
+mkdir -p "$LIB_DIR"
+install -m 0755 "$DIR/$BIN_NAME" "$LIB_DIR/$BIN_NAME.new"
+mv -f "$LIB_DIR/$BIN_NAME.new" "$LIB_DIR/$BIN_NAME"
+ln -sfn "$LIB_DIR/$BIN_NAME" "${BIN_LINK}.new"
+mv -Tf "${BIN_LINK}.new" "$BIN_LINK"
 
 if ! id relay >/dev/null 2>&1; then
   log "creating system user 'relay'"
@@ -719,7 +725,22 @@ log "installing systemd unit"
 curl -fsSL "https://raw.githubusercontent.com/$REPO/main/deploy/systemd/${UNIT_NAME}.service" \
      -o "/etc/systemd/system/${UNIT_NAME}.service"
 
+log "installing relay-master-updater (root-level upgrade helper)"
+mkdir -p "$LIB_DIR"
+if [[ -f "$DIR/relay-master-updater" ]]; then
+  install -m 0755 "$DIR/relay-master-updater" "$LIB_DIR/relay-master-updater"
+else
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/deploy/systemd/relay-master-updater" \
+       -o "$LIB_DIR/relay-master-updater" 2>/dev/null || true
+  [[ -f "$LIB_DIR/relay-master-updater" ]] && chmod 0755 "$LIB_DIR/relay-master-updater"
+fi
+for unit in relay-master-updater.service relay-master-updater.path; do
+  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/deploy/systemd/$unit" \
+       -o "/etc/systemd/system/$unit"
+done
+
 systemctl daemon-reload
+systemctl enable --now relay-master-updater.path 2>/dev/null || true
 
 setup_caddy() {
   local domain="$1"
