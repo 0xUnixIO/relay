@@ -521,6 +521,9 @@ export const Api = {
 
   getForwardStats: (id: string, period: "1h" | "24h" | "7d" = "1h") =>
     api<ForwardStatBucket[]>(`/api/v1/forwards/${id}/stats?period=${period}`),
+
+  getGlobalTrafficStats: (period: "1h" | "24h" | "7d" = "1h") =>
+    api<ForwardStatBucket[]>(`/api/v1/stats/traffic?period=${period}`),
 };
 
 export interface SystemConfig {

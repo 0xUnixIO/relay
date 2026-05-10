@@ -152,7 +152,8 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .route("/api/v1/auth/me", get(get_me))
         .route("/api/v1/auth/me/password", post(change_own_password))
         .route("/api/v1/events/forwards", get(forward_stats_stream))
-        .route("/api/v1/forwards/:id/stats", get(forward_stats_history));
+        .route("/api/v1/forwards/:id/stats", get(forward_stats_history))
+        .route("/api/v1/stats/traffic", get(global_traffic_stats_handler));
 
     let protected = admin
         .merge(user)
@@ -3566,6 +3567,47 @@ async fn forward_stats_history(
     )
     .bind(bucket_secs)
     .bind(id)
+    .bind(since)
+    .fetch_all(&s.db)
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    use sqlx::Row;
+    let buckets: Vec<StatsBucket> = rows
+        .iter()
+        .map(|r| StatsBucket {
+            ts: r.get("ts"),
+            bytes_in: r.get("bytes_in"),
+            bytes_out: r.get("bytes_out"),
+            peak_conns: r.get("peak_conns"),
+        })
+        .collect();
+
+    Ok(Json(buckets))
+}
+
+async fn global_traffic_stats_handler(
+    State(s): State<AppState>,
+    Query(q): Query<StatsHistoryQuery>,
+) -> ApiResult<Json<Vec<StatsBucket>>> {
+    let (bucket_secs, since) = match q.period.as_deref() {
+        Some("7d") => (3600_f64, "7 days"),
+        Some("24h") => (300_f64, "24 hours"),
+        _ => (60_f64, "1 hour"),
+    };
+
+    let rows = sqlx::query(
+        "SELECT
+             to_timestamp(floor(extract(epoch from ts) / $1) * $1) AS ts,
+             SUM(bytes_in)::BIGINT                                  AS bytes_in,
+             SUM(bytes_out)::BIGINT                                 AS bytes_out,
+             MAX(peak_conns)::INT                                   AS peak_conns
+         FROM forward_stats
+         WHERE ts >= now() - $2::interval
+         GROUP BY 1
+         ORDER BY 1",
+    )
+    .bind(bucket_secs)
     .bind(since)
     .fetch_all(&s.db)
     .await

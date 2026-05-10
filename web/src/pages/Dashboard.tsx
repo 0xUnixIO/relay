@@ -2,11 +2,12 @@ import { timeAgo } from "@/lib/utils";
 import { Link } from "react-router-dom";
 import { Server, Network, Zap, Activity } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Api, type NodeInfo } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { Api, type NodeInfo, type ForwardStatBucket } from "@/lib/api";
 import useSWR from "swr";
 import { ProtocolSetBadge } from "@/components/ui/protocol-set-badge";
 import { EmptyState } from "@/components/ui/empty-state";
-import { useRef, useEffect, useMemo } from "react";
+import { useState } from "react";
 import {
   AreaChart,
   Area,
@@ -37,22 +38,23 @@ function MiniBar({ value, max, color }: { value: number; max: number; color: str
   );
 }
 
-/** 环形缓冲区条目 */
-interface FlowSample {
-  ts: number;
-  inBytes: number;
-  outBytes: number;
+type Period = "1h" | "24h" | "7d";
+
+function fmtTs(ts: string, period: Period): string {
+  const d = new Date(ts);
+  if (period === "7d") return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:00`;
+  return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-/** Tooltip 格式化 */
-function FlowTooltip({ active, payload }: { active?: boolean; payload?: Array<{ value: number; name: string }> }) {
+function FlowTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; name: string }>; label?: string }) {
   if (!active || !payload?.length) return null;
   return (
     <div className="rounded-md border bg-background px-2.5 py-1.5 text-xs shadow-sm space-y-0.5">
+      {label && <div className="text-muted-foreground mb-1">{label}</div>}
       {payload.map((p) => (
         <div key={p.name} className="flex items-center gap-2">
           <span className="text-muted-foreground">{p.name}</span>
-          <span className="font-medium tabular-nums">{fmtBytes(p.value)}/s</span>
+          <span className="font-medium tabular-nums">{fmtBytes(p.value)}</span>
         </div>
       ))}
     </div>
@@ -63,33 +65,19 @@ export default function Dashboard() {
   const { data: nodes = [] } = useSWR("nodes", Api.listNodes);
   const { data: forwards = [] } = useSWR("forwards", Api.listForwards);
 
-  // ---------- 流量趋势：环形缓冲区 ----------
-  const bufRef = useRef<FlowSample[]>([]);
+  // ---------- 流量趋势：DB 历史数据 ----------
+  const [period, setPeriod] = useState<Period>("1h");
+  const { data: trafficData = [] } = useSWR(
+    ["globalTraffic", period],
+    () => Api.getGlobalTrafficStats(period),
+    { refreshInterval: 60_000 },
+  );
 
-  useEffect(() => {
-    // 每次 forwards 更新时，把当前总量快照追加到缓冲区
-    const inBytes = forwards.reduce((s, f) => s + (f.in_flow_bytes ?? 0), 0);
-    const outBytes = forwards.reduce((s, f) => s + (f.out_flow_bytes ?? 0), 0);
-    const sample: FlowSample = { ts: Date.now(), inBytes, outBytes };
-    bufRef.current = [...bufRef.current, sample].slice(-60); // 最多保留 60 条
-  }, [forwards]);
-
-  /** 将相邻两条样本做差，得到 bytes/sec 速率数组，供图表渲染 */
-  const rateData = useMemo(() => {
-    const buf = bufRef.current;
-    if (buf.length < 2) return [];
-    const result: { inRate: number; outRate: number }[] = [];
-    for (let i = 1; i < buf.length; i++) {
-      const dtSec = (buf[i].ts - buf[i - 1].ts) / 1000;
-      if (dtSec <= 0) continue;
-      result.push({
-        inRate: Math.max(0, (buf[i].inBytes - buf[i - 1].inBytes) / dtSec),
-        outRate: Math.max(0, (buf[i].outBytes - buf[i - 1].outBytes) / dtSec),
-      });
-    }
-    return result;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [forwards]); // forwards 更新后重新计算
+  const chartData = trafficData.map((b: ForwardStatBucket) => ({
+    ts: fmtTs(b.ts, period),
+    bytes_in: b.bytes_in,
+    bytes_out: b.bytes_out,
+  }));
 
   // ---------- 其余统计 ----------
   const online = nodes.filter(isOnline);
@@ -132,11 +120,20 @@ export default function Dashboard() {
 
       {/* 流量趋势图 */}
       <div className="rounded-lg border p-4 space-y-3">
-        {/* 标题栏 */}
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
-            流量趋势（5 min）
-          </h2>
+          <div className="flex items-center gap-4">
+            <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">
+              流量趋势
+            </h2>
+            <div className="flex items-center gap-1">
+              {(["1h", "24h", "7d"] as Period[]).map((p) => (
+                <Button key={p} size="sm" variant={period === p ? "default" : "ghost"}
+                  className="h-6 px-2 text-xs" onClick={() => setPeriod(p)}>
+                  {p === "1h" ? "1 小时" : p === "24h" ? "24 小时" : "7 天"}
+                </Button>
+              ))}
+            </div>
+          </div>
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: "hsl(var(--primary))" }} />
@@ -149,39 +146,35 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* 图表主体 */}
-        {rateData.length < 2 ? (
+        {chartData.length === 0 ? (
           <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-            采集中…
+            暂无数据
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={rateData} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
+            <AreaChart data={chartData} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
               <defs>
-                {/* 下载渐变 */}
                 <linearGradient id="gradIn" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.25} />
                   <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
                 </linearGradient>
-                {/* 上传渐变 */}
                 <linearGradient id="gradOut" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#10b981" stopOpacity={0.25} />
                   <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <XAxis hide />
+              <XAxis dataKey="ts" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
               <YAxis
-                hide={false}
                 width={68}
                 tickLine={false}
                 axisLine={false}
                 tick={{ fontSize: 11 }}
-                tickFormatter={(v: number) => `${fmtBytes(v)}/s`}
+                tickFormatter={(v: number) => fmtBytes(v)}
               />
               <Tooltip content={<FlowTooltip />} />
               <Area
                 type="monotone"
-                dataKey="inRate"
+                dataKey="bytes_in"
                 name="下载"
                 stroke="hsl(var(--primary))"
                 strokeWidth={1.5}
@@ -191,7 +184,7 @@ export default function Dashboard() {
               />
               <Area
                 type="monotone"
-                dataKey="outRate"
+                dataKey="bytes_out"
                 name="上传"
                 stroke="#10b981"
                 strokeWidth={1.5}
