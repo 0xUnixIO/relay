@@ -277,6 +277,128 @@ async fn upload_to_r2(cfg: &R2BackupConfig, object_key: &str, data: &[u8]) -> an
     Ok(())
 }
 
+async fn download_from_r2(cfg: &R2BackupConfig, object_key: &str) -> anyhow::Result<Vec<u8>> {
+    let now = Utc::now();
+    let date_str = now.format("%Y%m%d").to_string();
+    let datetime_str = now.format("%Y%m%dT%H%M%SZ").to_string();
+
+    let region = "auto";
+    let host = format!("{}.r2.cloudflarestorage.com", cfg.account_id);
+    let url = format!("https://{}/{}/{}", host, cfg.bucket_name, object_key);
+
+    // GET 请求无请求体，payload hash 为空字符串的 SHA256
+    let payload_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    let encoded_key = uri_encode_path(object_key);
+    let encoded_bucket = uri_encode(cfg.bucket_name.as_str());
+    let canonical_uri = format!("/{}/{}", encoded_bucket, encoded_key);
+
+    let canonical_headers =
+        format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{datetime_str}\n");
+    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+
+    let canonical_request =
+        format!("GET\n{canonical_uri}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
+
+    let credential_scope = format!("{date_str}/{region}/s3/aws4_request");
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{datetime_str}\n{credential_scope}\n{}",
+        hex::encode(Sha256::digest(canonical_request.as_bytes()))
+    );
+
+    let k_date = hmac_sha256(
+        format!("AWS4{}", cfg.secret_access_key).as_bytes(),
+        date_str.as_bytes(),
+    );
+    let k_region = hmac_sha256(&k_date, region.as_bytes());
+    let k_service = hmac_sha256(&k_region, b"s3");
+    let k_signing = hmac_sha256(&k_service, b"aws4_request");
+    let signature = hex::encode(hmac_sha256(&k_signing, string_to_sign.as_bytes()));
+
+    let auth = format!(
+        "AWS4-HMAC-SHA256 Credential={}/{},SignedHeaders={},Signature={}",
+        cfg.access_key_id, credential_scope, signed_headers, signature
+    );
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header("x-amz-date", &datetime_str)
+        .header("x-amz-content-sha256", payload_hash)
+        .header("authorization", auth)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow::anyhow!("R2 下载失败 ({status}): {body}"));
+    }
+
+    Ok(resp.bytes().await?.to_vec())
+}
+
+pub async fn restore_from_r2(
+    db: &PgPool,
+    cfg: &R2BackupConfig,
+    object_key: &str,
+) -> anyhow::Result<()> {
+    let compressed = download_from_r2(cfg, object_key).await?;
+
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+    let mut gz = GzDecoder::new(&compressed[..]);
+    let mut json_bytes = Vec::new();
+    gz.read_to_end(&mut json_bytes)?;
+
+    let backup: serde_json::Value = serde_json::from_slice(&json_bytes)?;
+    let version = backup["version"].as_i64().unwrap_or(0);
+    if version != 1 {
+        return Err(anyhow::anyhow!("不支持的备份版本: {version}"));
+    }
+    let tables = backup["tables"]
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("备份格式错误：缺少 tables 字段"))?;
+
+    let mut tx = db.begin().await?;
+
+    // 禁用 FK 触发器（需要 REPLICATION 权限或 superuser）
+    sqlx::query("SET LOCAL session_replication_role = 'replica'")
+        .execute(&mut *tx)
+        .await?;
+
+    // 一次性 TRUNCATE 所有有数据的表，CASCADE 处理交叉引用
+    let table_list: Vec<String> = tables
+        .keys()
+        .filter(|t| !tables[*t].as_array().map(|a| a.is_empty()).unwrap_or(true))
+        .map(|t| pg_quote_ident(t))
+        .collect();
+
+    if !table_list.is_empty() {
+        let sql = format!("TRUNCATE TABLE {} CASCADE", table_list.join(", "));
+        sqlx::query(&sql).execute(&mut *tx).await?;
+    }
+
+    // 逐表写回
+    for (table_name, rows) in tables {
+        if rows.as_array().map(|a| a.is_empty()).unwrap_or(true) {
+            continue;
+        }
+        let safe = pg_quote_ident(table_name);
+        let rows_json = serde_json::to_string(rows)?;
+        sqlx::query(&format!(
+            "INSERT INTO {safe} SELECT * FROM json_populate_recordset(null::{safe}, $1::json)"
+        ))
+        .bind(&rows_json)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    tracing::info!(object_key, "backup restore completed");
+    Ok(())
+}
+
 fn uri_encode(s: &str) -> String {
     s.chars()
         .flat_map(|c| {

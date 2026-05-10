@@ -117,6 +117,11 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         )
         .route("/api/v1/system/backup/trigger", post(trigger_backup))
         .route("/api/v1/system/backup/jobs", get(list_backup_jobs))
+        .route("/api/v1/system/backup/files", get(list_backup_files))
+        .route(
+            "/api/v1/system/backup/restore",
+            post(restore_backup_handler),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_admin_layer,
@@ -4390,6 +4395,49 @@ async fn list_backup_jobs(
     .fetch_all(&s.db)
     .await?;
     Ok(Json(jobs))
+}
+
+async fn list_backup_files(State(s): State<AppState>) -> ApiResult<Json<Vec<BackupJob>>> {
+    let jobs: Vec<BackupJob> = sqlx::query_as(
+        "SELECT id, state, triggered_by, object_key, size_bytes, error, started_at, completed_at
+           FROM backup_jobs
+          WHERE state = 'succeeded' AND object_key IS NOT NULL
+          ORDER BY started_at DESC
+          LIMIT 200",
+    )
+    .fetch_all(&s.db)
+    .await?;
+    Ok(Json(jobs))
+}
+
+#[derive(Deserialize)]
+struct RestoreBackupReq {
+    object_key: String,
+}
+
+async fn restore_backup_handler(
+    State(s): State<AppState>,
+    Json(req): Json<RestoreBackupReq>,
+) -> ApiResult<StatusCode> {
+    if req.object_key.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "object_key 不能为空",
+        ));
+    }
+    let cfg = match crate::backup::read_r2_config(&s.db).await? {
+        Some(c) if !c.account_id.is_empty() => c,
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "R2 备份尚未配置",
+            ));
+        }
+    };
+    crate::backup::restore_from_r2(&s.db, &cfg, &req.object_key)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

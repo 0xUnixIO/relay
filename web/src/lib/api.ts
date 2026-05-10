@@ -469,6 +469,13 @@ export const Api = {
     api<void>("/api/v1/system/backup/trigger", { method: "POST" }),
   listBackupJobs: (limit = 20) =>
     api<BackupJob[]>(`/api/v1/system/backup/jobs?limit=${limit}`),
+  listBackupFiles: () =>
+    api<BackupJob[]>("/api/v1/system/backup/files"),
+  restoreBackup: (objectKey: string) =>
+    api<void>("/api/v1/system/backup/restore", {
+      method: "POST",
+      body: JSON.stringify({ object_key: objectKey }),
+    }),
 
   // ---------- User Groups ----------
   listUserGroups: () => api<UserGroup[]>("/api/v1/user-groups"),

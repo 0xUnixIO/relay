@@ -1,7 +1,7 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
-import { Copy, Check, Eye, EyeOff, Play, RefreshCw } from "lucide-react";
+import { Copy, Check, Eye, EyeOff, Play, RefreshCw, FolderSearch } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Api, ApiError, type BackupJob } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,13 @@ import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 
 export default function ConfigPage() {
   const { data: cfg, mutate } = useSWR("system-config", Api.getConfig);
@@ -23,10 +30,6 @@ export default function ConfigPage() {
     Api.getBranding,
   );
   const { data: r2cfg, mutate: mutateR2 } = useSWR("r2-backup-config", Api.getR2BackupConfig);
-  const { data: backupJobs, mutate: mutateJobs } = useSWR(
-    "backup-jobs",
-    () => Api.listBackupJobs(20),
-  );
 
   const [enabled, setEnabled] = useState<boolean | undefined>(undefined);
   const [title, setTitle] = useState<string | undefined>(undefined);
@@ -49,6 +52,11 @@ export default function ConfigPage() {
   const [r2Saving, setR2Saving] = useState(false);
   const [showSecret, setShowSecret] = useState(false);
   const [triggering, setTriggering] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [backupFiles, setBackupFiles] = useState<BackupJob[] | null>(null);
+  const [loadingFiles, setLoadingFiles] = useState(false);
+  const [confirmKey, setConfirmKey] = useState<string | null>(null);
+  const [restoringKey, setRestoringKey] = useState<string | null>(null);
 
   const effectiveEnabled = enabled ?? cfg?.announcement_enabled ?? false;
   const effectiveTitle = title ?? cfg?.announcement_title ?? "";
@@ -158,11 +166,40 @@ export default function ConfigPage() {
     try {
       await Api.triggerBackup();
       toast.success("备份任务已提交，正在后台执行");
-      setTimeout(() => mutateJobs(), 1500);
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : String(e));
     } finally {
       setTriggering(false);
+    }
+  };
+
+  const openFilesDialog = async () => {
+    setFilesOpen(true);
+    setBackupFiles(null);
+    setConfirmKey(null);
+    setLoadingFiles(true);
+    try {
+      const files = await Api.listBackupFiles();
+      setBackupFiles(files);
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : String(e));
+      setFilesOpen(false);
+    } finally {
+      setLoadingFiles(false);
+    }
+  };
+
+  const doRestore = async (objectKey: string) => {
+    setRestoringKey(objectKey);
+    try {
+      await Api.restoreBackup(objectKey);
+      toast.success("恢复完成，建议刷新页面");
+      setConfirmKey(null);
+      setFilesOpen(false);
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setRestoringKey(null);
     }
   };
 
@@ -171,14 +208,6 @@ export default function ConfigPage() {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
-  };
-
-  const jobStateBadge = (job: BackupJob) => {
-    if (job.state === "succeeded")
-      return <Badge variant="outline" className="text-green-600 border-green-300 text-xs">成功</Badge>;
-    if (job.state === "failed")
-      return <Badge variant="outline" className="text-red-500 border-red-300 text-xs">失败</Badge>;
-    return <Badge variant="outline" className="text-amber-500 border-amber-300 text-xs">执行中</Badge>;
   };
 
   return (
@@ -467,45 +496,94 @@ export default function ConfigPage() {
                 : <><Play className="h-4 w-4 mr-1.5" />立即备份</>
               }
             </Button>
+            <Button
+              variant="outline"
+              onClick={openFilesDialog}
+              disabled={!r2cfg?.configured}
+            >
+              <FolderSearch className="h-4 w-4 mr-1.5" />
+              查询备份文件
+            </Button>
           </div>
 
-          {backupJobs && backupJobs.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs text-muted-foreground font-medium">备份历史（最近 20 条）</p>
-              <div className="rounded-md border overflow-hidden">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="border-b bg-muted/40">
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">时间</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">触发方式</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">状态</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">大小</th>
-                      <th className="px-3 py-2 text-left font-medium text-muted-foreground">对象键</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {backupJobs.map((job) => (
-                      <tr key={job.id} className="border-b last:border-0 hover:bg-muted/20">
-                        <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
-                          {new Date(job.started_at).toLocaleString("zh-CN", { hour12: false })}
-                        </td>
-                        <td className="px-3 py-2">
-                          {job.triggered_by === "manual" ? "手动" : "定时"}
-                        </td>
-                        <td className="px-3 py-2">{jobStateBadge(job)}</td>
-                        <td className="px-3 py-2 tabular-nums">{fmtSize(job.size_bytes)}</td>
-                        <td className="px-3 py-2 font-mono text-muted-foreground max-w-[200px] truncate" title={job.object_key ?? ""}>
-                          {job.state === "failed"
-                            ? <span className="text-red-500">{job.error}</span>
-                            : (job.object_key ?? "—")}
-                        </td>
+          <Dialog open={filesOpen} onOpenChange={setFilesOpen}>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>备份文件列表</DialogTitle>
+                <DialogDescription>
+                  选择一个备份文件进行恢复。恢复操作会覆盖当前全部数据，请谨慎操作。
+                </DialogDescription>
+              </DialogHeader>
+              {loadingFiles ? (
+                <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  加载中…
+                </div>
+              ) : backupFiles && backupFiles.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">暂无备份文件</p>
+              ) : backupFiles && (
+                <div className="rounded-md border overflow-hidden text-xs">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b bg-muted/40">
+                        <th className="px-3 py-2 text-left font-medium text-muted-foreground">时间</th>
+                        <th className="px-3 py-2 text-left font-medium text-muted-foreground">大小</th>
+                        <th className="px-3 py-2 text-left font-medium text-muted-foreground">对象键</th>
+                        <th className="px-3 py-2 text-left font-medium text-muted-foreground">操作</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+                    </thead>
+                    <tbody>
+                      {backupFiles.map((file) => (
+                        <tr key={file.id} className="border-b last:border-0 hover:bg-muted/20">
+                          <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
+                            {new Date(file.started_at).toLocaleString("zh-CN", { hour12: false })}
+                          </td>
+                          <td className="px-3 py-2 tabular-nums">{fmtSize(file.size_bytes)}</td>
+                          <td className="px-3 py-2 font-mono text-muted-foreground max-w-[200px] truncate" title={file.object_key ?? ""}>
+                            {file.object_key ?? "—"}
+                          </td>
+                          <td className="px-3 py-2">
+                            {confirmKey === file.object_key ? (
+                              <div className="flex gap-1">
+                                <Button
+                                  size="sm"
+                                  variant="destructive"
+                                  className="h-6 text-xs px-2"
+                                  disabled={restoringKey === file.object_key}
+                                  onClick={() => doRestore(file.object_key!)}
+                                >
+                                  {restoringKey === file.object_key ? <RefreshCw className="h-3 w-3 animate-spin" /> : "确认恢复"}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 text-xs px-2"
+                                  disabled={!!restoringKey}
+                                  onClick={() => setConfirmKey(null)}
+                                >
+                                  取消
+                                </Button>
+                              </div>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 text-xs px-2"
+                                disabled={!!restoringKey}
+                                onClick={() => setConfirmKey(file.object_key!)}
+                              >
+                                恢复
+                              </Button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </DialogContent>
+          </Dialog>
         </CardContent>
       </Card>
     </div>
