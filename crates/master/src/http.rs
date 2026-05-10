@@ -3568,7 +3568,7 @@ async fn forward_stats_history(
     .bind(since)
     .fetch_all(&s.db)
     .await
-    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     use sqlx::Row;
     let buckets: Vec<StatsBucket> = rows
