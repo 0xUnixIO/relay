@@ -518,6 +518,9 @@ export const Api = {
 
   applyGroupTunnels: (id: string) =>
     api<ApplyGroupResult>(`/api/v1/user-groups/${id}/apply`, { method: "POST" }),
+
+  getForwardStats: (id: string, period: "1h" | "24h" | "7d" = "1h") =>
+    api<ForwardStatBucket[]>(`/api/v1/forwards/${id}/stats?period=${period}`),
 };
 
 export interface SystemConfig {
@@ -695,4 +698,11 @@ export interface UpdateGroupTunnelReq {
 export interface ApplyGroupResult {
   applied: number;
   skipped: number;
+}
+
+export interface ForwardStatBucket {
+  ts:         string;
+  bytes_in:   number;
+  bytes_out:  number;
+  peak_conns: number;
 }

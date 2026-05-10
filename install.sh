@@ -327,6 +327,96 @@ if ! id relay >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin relay
 fi
 
+# ── TimescaleDB 无感迁移（仅在 update 且使用内置 Docker Postgres 时触发）────────
+# pg16 数据目录格式与 timescale/timescaledb:latest-pg16 完全兼容，直接换镜像即可。
+# relay-master 启动后会自动执行 0004_forward_stats.sql 建表及 hypertable。
+_migrate_to_timescaledb() {
+  [[ -f "$COMPOSE_FILE" ]]          || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+  [[ -f "$COMPOSE_ENV_FILE" ]]      || return 0
+
+  local current_image
+  current_image=$(docker inspect relay-postgres --format '{{.Config.Image}}' 2>/dev/null || true)
+  [[ -z "$current_image" ]]         && return 0   # 容器不存在
+  [[ "$current_image" == timescale/* ]] && return 0  # 已是 TimescaleDB
+
+  log "检测到旧版 PostgreSQL 镜像（$current_image），自动迁移至 TimescaleDB（数据保留）..."
+
+  # 拉取最新 compose 文件（含新镜像名）
+  curl -fsSL \
+    "https://raw.githubusercontent.com/$REPO/main/deploy/docker-compose.postgres.yml" \
+    -o "$COMPOSE_FILE" \
+    || { warn "无法拉取新版 compose 文件，跳过迁移"; return 0; }
+
+  # 停旧容器并删除（数据卷 relay-pgdata 不受影响）
+  docker stop relay-postgres >/dev/null 2>&1 || true
+  docker rm   relay-postgres >/dev/null 2>&1 || true
+
+  # 用新镜像启动，挂载同一数据卷
+  ( cd "$ETC_DIR" && \
+    docker compose --env-file "$COMPOSE_ENV_FILE" -f "$COMPOSE_FILE" up -d ) >/dev/null \
+    || { warn "TimescaleDB 容器启动失败，请手动检查：docker compose -f $COMPOSE_FILE up -d"; return 0; }
+
+  log "等待 TimescaleDB 就绪..."
+  local i
+  for i in $(seq 1 30); do
+    docker exec relay-postgres pg_isready -U postgres >/dev/null 2>&1 && break
+    sleep 1
+    [[ "$i" -eq 30 ]] && { warn "TimescaleDB 未在 30s 内就绪，请检查：docker logs relay-postgres"; return 0; }
+  done
+
+  log "✓ 已迁移至 TimescaleDB（数据完好，relay-master 启动后自动建立 forward_stats 表）"
+}
+
+# ── 原生 PG：尝试安装 TimescaleDB 扩展包（apt only，失败静默跳过）──────────────
+# 安装后 relay-master 的 migration 会自动将 forward_stats 升级为 hypertable。
+# 未安装时 migration 会回退至普通表，功能不受影响，仅少了压缩/保留策略。
+_install_native_timescaledb() {
+  command -v apt-get >/dev/null 2>&1            || return 0  # 非 apt 系，跳过
+  [[ -f "$COMPOSE_FILE" ]]                       && return 0  # Docker 模式，已处理
+
+  # 检测 PG 主版本
+  local pgver
+  pgver=$(psql --version 2>/dev/null | grep -oE '[0-9]+' | head -1)
+  [[ -z "$pgver" ]] && return 0
+
+  # 已安装，跳过
+  dpkg -l "timescaledb-2-postgresql-${pgver}" >/dev/null 2>&1 && return 0
+
+  log "为原生 PostgreSQL ${pgver} 安装 TimescaleDB 扩展..."
+
+  # 添加 TimescaleDB apt 源
+  curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey \
+    | gpg --dearmor -o /etc/apt/trusted.gpg.d/timescaledb.gpg 2>/dev/null \
+    || { warn "无法获取 TimescaleDB GPG key，跳过"; return 0; }
+
+  local distro
+  distro=$(lsb_release -c -s 2>/dev/null || echo "focal")
+  echo "deb https://packagecloud.io/timescale/timescaledb/ubuntu/ ${distro} main" \
+    > /etc/apt/sources.list.d/timescaledb.list
+
+  apt-get update -qq 2>/dev/null
+  apt-get install -y "timescaledb-2-postgresql-${pgver}" >/dev/null 2>&1 \
+    || { warn "TimescaleDB 安装失败，relay 仍可正常运行（forward_stats 使用普通表）"; return 0; }
+
+  # 将 timescaledb 加入 shared_preload_libraries 并重启 PG
+  timescaledb-tune --quiet --yes 2>/dev/null || true
+  systemctl restart postgresql 2>/dev/null || true
+  local j
+  for j in $(seq 1 15); do
+    pg_isready -U postgres >/dev/null 2>&1 && break
+    sleep 1
+    [[ "$j" -eq 15 ]] && { warn "PostgreSQL 重启后未就绪，relay 仍会尝试启动"; return 0; }
+  done
+
+  log "✓ 已安装 TimescaleDB for PostgreSQL ${pgver}"
+}
+
+if [[ "$MODE" == "update" ]]; then
+  _migrate_to_timescaledb
+  _install_native_timescaledb
+fi
+
 mkdir -p "$ETC_DIR"
 
 write_placeholder_env() {
@@ -477,6 +567,8 @@ else
     done
     ADMIN_URL="postgres:///postgres?host=/var/run/postgresql"
     USE_SOCKET_INIT=1
+    # 新装完 PG 后立即尝试安装 TimescaleDB，失败静默跳过
+    _install_native_timescaledb
   }
 
   start_redis_docker() {

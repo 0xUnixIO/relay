@@ -17,7 +17,7 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: timescale/timescaledb:latest-pg16
     container_name: relay-postgres
     restart: unless-stopped
     environment:

@@ -19,6 +19,7 @@ mod scheduler;
 mod series;
 mod snowflake;
 mod state;
+mod stats_flush;
 mod upgrade;
 
 #[derive(Debug, Parser)]
@@ -168,6 +169,7 @@ async fn serve() -> Result<()> {
     scheduler::spawn(state.db.clone(), state.registry.clone());
     maintenance::spawn(state.db.clone());
     backup::spawn(state.db.clone(), state.backup_trigger.clone());
+    stats_flush::spawn(state.clone());
 
     let http_task = tokio::spawn(http::serve(http_addr, state.clone()));
     let grpc_task = tokio::spawn(grpc::serve(grpc_addr, state.clone(), pki.clone()));
