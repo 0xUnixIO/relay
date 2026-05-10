@@ -118,6 +118,7 @@ impl SeriesStore {
     /// the aggregate active count served by all DNS-LB entry nodes.
     pub async fn latest_forward_active_many(&self, node_ids: &[String], forward_id: &str) -> u32 {
         let key = format!("{forward_id}:0");
+        let stale_cutoff = chrono::Utc::now().timestamp_millis() - 30_000;
         let g = self.inner.read().await;
         let mut total: u32 = 0;
         for n in node_ids {
@@ -125,6 +126,7 @@ impl SeriesStore {
                 .get(n)
                 .and_then(|buf| buf.tunnels.get(&key))
                 .and_then(|q| q.back())
+                .filter(|s| s.ts_unix_ms >= stale_cutoff)
                 .map(|s| s.active_connections)
             {
                 total = total.saturating_add(v);
