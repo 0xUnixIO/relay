@@ -207,10 +207,10 @@ relay-master db migrate
 4. 在节点服务器上执行该命令
 
 Node 首次启动时自动完成 **Enrollment**（证书申请）：
-1. 用 `NODE_TOKEN` 连接 Master 的 Enrollment 端口（:7444）
+1. 用 `NODE_TOKEN` POST `http://<master>:7080/api/v1/enroll`（或反代 HTTPS URL）
 2. 本地生成密钥对，提交 CSR
-3. Master 签发客户端证书，写入 `NODE_PKI_DIR`
-4. 此后用 mTLS 与 Master 建立长连接
+3. Master 原子消费 token、签发客户端证书，写入 `NODE_PKI_DIR`
+4. 此后通过 :7443 mTLS 与 Master 建立长连接
 
 **Node systemd 管理**：
 
@@ -473,9 +473,9 @@ Hop 间的端口由系统自动分配，ACL 自动配置（上一跳 IP 加入�
 | `MASTER_DATABASE_URL` | — | ✓ | PostgreSQL DSN，如 `postgres://relay:pw@localhost/relay` |
 | `MASTER_PUBLIC_ADDR` | — | ✓ | Master 公网地址/域名，用于 TLS 证书 SAN |
 | `MASTER_JWT_SECRET` | `dev-only-...` | 生产必填 | JWT 签名密钥，生产环境必须修改 |
-| `MASTER_HTTP_ADDR` | `0.0.0.0:7080` | — | REST API 监听地址 |
+| `MASTER_HTTP_ADDR` | `0.0.0.0:7080` | — | REST API + cold-start enrollment 监听地址 |
 | `MASTER_GRPC_ADDR` | `0.0.0.0:7443` | — | gRPC 监听地址（mTLS） |
-| `MASTER_ENROLL_ADDR` | `0.0.0.0:7444` | — | Enrollment 监听地址（TLS） |
+| `MASTER_ENROLL_PUBLIC_URL` | 自动 fallback | — | 节点 enroll 对外 URL；有反代时填反代域名（如 `https://relay.example.com/api/v1/enroll`），留空时退化为 `http://<public_host>:<http_port>/api/v1/enroll` |
 | `MASTER_PKI_DIR` | `/var/lib/relay-master/pki` | — | CA 和证书存储目录 |
 | `RUST_LOG` | `info` | — | 日志级别，调试时可设为 `relay_master=debug` |
 
@@ -489,7 +489,7 @@ Hop 间的端口由系统自动分配，ACL 自动配置（上一跳 IP 加入�
 | `NODE_TOKEN` | — | 初次启动 | 一次性 enrollment token（用完即失效） |
 | `NODE_CA_CERT_B64` | — | 初次启动 | Base64 编码的 Master CA 证书 |
 | `NODE_MASTER_SERVER_NAME` | 自动推导 | — | TLS SNI override |
-| `NODE_MASTER_ENROLL_ENDPOINT` | 自动推导 | — | Enrollment 端点（默认将 7443 替换为 7444） |
+| `NODE_MASTER_ENROLL_ENDPOINT` | 自动推导 | — | Enrollment 端点（默认 `http://<master-host>:7080/api/v1/enroll`） |
 | `RUST_LOG` | `info` | — | 日志级别 |
 
 ### 11.3 Node CLI 参数
@@ -624,7 +624,7 @@ ss -tlnp | grep <PORT>
 常见原因：
 - Token 已被使用（一次性 token，消费后失效）→ 在 Web UI 重新生成
 - `NODE_CA_CERT_B64` 格式错误 → 重新从 Web UI 复制安装命令
-- 节点无法连接 Master 的 7444 端口 → 检查防火墙
+- 节点无法连接 Master 的 7080 端口（cold-start enrollment）→ 检查防火墙
 
 ### Q: 如何查看某条转发的流量统计？
 

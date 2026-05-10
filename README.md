@@ -95,7 +95,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/0xUnixIO/relay/main/install.
 **node 主机**
 - Linux x86_64 或 aarch64
 - systemd（无需 Docker）
-- 能访问 master 的 `7443` 和 `7444` 端口
+- 能访问 master 的 `7080`（cold-start enrollment）和 `7443`（gRPC mTLS）端口
 
 ---
 
