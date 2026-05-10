@@ -126,6 +126,19 @@ async fn serve() -> Result<()> {
     let grpc_addr: std::net::SocketAddr = cfg.grpc_addr.parse()?;
     tracing::info!(%http_addr, %grpc_addr, "starting relay-master");
 
+    if cfg.enroll_public_url.is_none() {
+        let http_is_local =
+            cfg.http_addr.starts_with("127.0.0.1") || cfg.http_addr.starts_with("[::1]");
+        if http_is_local {
+            tracing::warn!(
+                http_addr = %cfg.http_addr,
+                "MASTER_ENROLL_PUBLIC_URL is not set and HTTP listener is bound to loopback — \
+                 节点 enroll 拿到的 fallback URL 将不可达。请在 .env 中显式设置 \
+                 MASTER_ENROLL_PUBLIC_URL（如反代域名 https://relay.example.com/api/v1/enroll）"
+            );
+        }
+    }
+
     let state = state::AppState::new(cfg, pool, pki.clone(), redis);
 
     // 启动时一次性从 Redis warmup 心跳 L1，让重启后立即拥有运行时视图。
