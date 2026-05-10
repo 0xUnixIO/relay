@@ -389,6 +389,7 @@ pub async fn reallocate_layer_port(
     forward_id: i64,
     hop_index: i32,
     protocols: &[&str],
+    requested: Option<i32>,
 ) -> Result<i32, ApiError> {
     if protocols.is_empty() {
         return Err(ApiError::new(
@@ -443,8 +444,10 @@ pub async fn reallocate_layer_port(
     .await
     .map_err(ApiError::from)?;
 
-    let new_port =
-        allocate_layer_port(&mut tx, forward_id, hop_index, &node_ids, protocols, None).await?;
+    let new_port = allocate_layer_port(
+        &mut tx, forward_id, hop_index, &node_ids, protocols, requested,
+    )
+    .await?;
 
     // If this is the entry layer, sync forwards.in_port.
     if hop_index == 0 {

@@ -138,7 +138,7 @@ export default function ForwardsPage() {
 
   // 宿主端口占用探测（admin + 有入口节点 + 端口有效且无冲突）
   useEffect(() => {
-    if (!open || editing || !entryNodeId || !portValid || portConflict) {
+    if (!open || !entryNodeId || !portValid || portConflict) {
       setHostProbe({ status: "idle" });
       return;
     }
@@ -195,8 +195,10 @@ export default function ForwardsPage() {
     setSaving(true);
     try {
       if (editing) {
+        const inPort = form.in_port.trim() ? Number(form.in_port) : undefined;
         await Api.updateForward(editing.id, {
           name: form.name,
+          in_port: inPort,
           remote_addrs: parsed,
         });
       } else {
@@ -457,28 +459,25 @@ export default function ForwardsPage() {
                 <div className="flex gap-2">
                   <Input
                     type="number"
-                    disabled={!!editing}
                     value={form.in_port}
                     onChange={(e) => setForm({ ...form, in_port: e.target.value })}
                     aria-invalid={form.in_port !== "" && (!portValid || portConflict)}
                     className="flex-1"
                   />
-                  {!editing && (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span tabIndex={!form.tunnel_id ? 0 : undefined}>
-                          <Button type="button" variant="outline" size="icon" onClick={randomPort} disabled={!form.tunnel_id}>
-                            <Shuffle className="h-4 w-4" />
-                          </Button>
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        {!form.tunnel_id ? "请先选择隧道" : entryNode ? `随机空闲端口（${entryNode.port_range_start}–${entryNode.port_range_end}）` : "随机分配端口"}
-                      </TooltipContent>
-                    </Tooltip>
-                  )}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span tabIndex={!entryNodeId ? 0 : undefined}>
+                        <Button type="button" variant="outline" size="icon" onClick={randomPort} disabled={!entryNodeId}>
+                          <Shuffle className="h-4 w-4" />
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {!entryNodeId ? "请先选择隧道" : entryNode ? `随机空闲端口（${entryNode.port_range_start}–${entryNode.port_range_end}）` : "随机分配端口"}
+                    </TooltipContent>
+                  </Tooltip>
                 </div>
-                {!editing && form.in_port !== "" && (
+                {form.in_port !== "" && (
                   <p className="text-xs">
                     {!portValid && <span className="text-destructive">端口须在 1-65535 之间</span>}
                     {portConflict && <span className="text-destructive">端口 {portNum} 已被其他转发占用</span>}

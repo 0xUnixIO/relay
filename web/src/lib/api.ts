@@ -242,6 +242,7 @@ export interface CreateForwardReq {
 
 export interface UpdateForwardReq {
   name?: string;
+  in_port?: number;
   remote_addrs?: string[];
   lb_strategy?: string;
   max_connections?: number;

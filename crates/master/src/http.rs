@@ -384,9 +384,14 @@ async fn probe_and_fix_ports(
                     ),
                 ));
             }
-            let new_port =
-                crate::ports::reallocate_layer_port(&s.db, forward_id, hop_index, &proto_slice)
-                    .await?;
+            let new_port = crate::ports::reallocate_layer_port(
+                &s.db,
+                forward_id,
+                hop_index,
+                &proto_slice,
+                None,
+            )
+            .await?;
             tracing::info!(
                 hop_index,
                 old_port = port,
@@ -2979,6 +2984,7 @@ async fn get_forward(
 #[derive(Deserialize)]
 pub struct UpdateForwardReq {
     pub name: Option<String>,
+    pub in_port: Option<i32>,
     pub remote_addrs: Option<Vec<String>>,
     pub lb_strategy: Option<String>,
     pub max_connections: Option<i32>,
@@ -2998,6 +3004,25 @@ async fn update_forward(
     }
     if let Some(lb) = req.lb_strategy.as_deref() {
         validate_lb(lb)?;
+    }
+    if let Some(new_port) = req.in_port {
+        let (cur_port,): (i32,) = sqlx::query_as("SELECT in_port FROM forwards WHERE id = $1")
+            .bind(id)
+            .fetch_one(&s.db)
+            .await?;
+        if new_port != cur_port {
+            let (protocols,): (Vec<String>,) = sqlx::query_as(
+                "SELECT t.protocols FROM forwards f
+                   JOIN user_tunnels ut ON ut.id = f.user_tunnel_id
+                   JOIN tunnels t ON t.id = ut.tunnel_id
+                  WHERE f.id = $1",
+            )
+            .bind(id)
+            .fetch_one(&s.db)
+            .await?;
+            let proto_refs: Vec<&str> = protocols.iter().map(|s| s.as_str()).collect();
+            crate::ports::reallocate_layer_port(&s.db, id, 0, &proto_refs, Some(new_port)).await?;
+        }
     }
     sqlx::query(
         "UPDATE forwards SET
