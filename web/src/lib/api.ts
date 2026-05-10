@@ -592,6 +592,7 @@ export interface R2BackupConfigResp {
   secret_access_key: string;
   path_prefix: string;
   schedule_hours: number;
+  keep_count: number;
 }
 
 export interface R2BackupConfigReq {
@@ -602,6 +603,7 @@ export interface R2BackupConfigReq {
   secret_access_key?: string;
   path_prefix?: string;
   schedule_hours?: number;
+  keep_count?: number;
 }
 
 export type BackupJobState = "running" | "succeeded" | "failed";

@@ -48,6 +48,7 @@ export default function ConfigPage() {
     secret_access_key: string;
     path_prefix: string;
     schedule_hours: number;
+    keep_count: number;
   } | null>(null);
   const [r2Saving, setR2Saving] = useState(false);
   const [showSecret, setShowSecret] = useState(false);
@@ -138,6 +139,7 @@ export default function ConfigPage() {
     secret_access_key: "",
     path_prefix: r2cfg?.path_prefix ?? "",
     schedule_hours: r2cfg?.schedule_hours ?? 0,
+    keep_count: r2cfg?.keep_count ?? 0,
   };
   const saveR2 = async () => {
     setR2Saving(true);
@@ -149,6 +151,7 @@ export default function ConfigPage() {
         secret_access_key: r2Fields.secret_access_key || undefined,
         path_prefix: r2Fields.path_prefix || undefined,
         schedule_hours: r2Fields.schedule_hours,
+        keep_count: r2Fields.keep_count,
       });
       await mutateR2();
       setR2Draft(null);
@@ -458,7 +461,7 @@ export default function ConfigPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1.5">
               <Label>路径前缀 <span className="text-muted-foreground text-xs">（可选）</span></Label>
               <Input
@@ -468,7 +471,7 @@ export default function ConfigPage() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label>定时备份间隔（小时，0 禁用）</Label>
+              <Label>定时间隔（小时，0 禁用）</Label>
               <Input
                 type="number"
                 min={0}
@@ -477,6 +480,19 @@ export default function ConfigPage() {
                 onChange={(e) => {
                   const v = Math.max(0, Math.floor(Number(e.target.value) || 0));
                   setR2Draft({ ...r2Fields, schedule_hours: v });
+                }}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>保留份数（0 不限制）</Label>
+              <Input
+                type="number"
+                min={0}
+                placeholder="0"
+                value={r2Fields.keep_count === 0 ? "" : r2Fields.keep_count}
+                onChange={(e) => {
+                  const v = Math.max(0, Math.floor(Number(e.target.value) || 0));
+                  setR2Draft({ ...r2Fields, keep_count: v });
                 }}
               />
             </div>

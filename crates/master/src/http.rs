@@ -4254,6 +4254,7 @@ struct R2BackupConfigResp {
     secret_access_key: String,
     path_prefix: String,
     schedule_hours: u32,
+    keep_count: u32,
 }
 
 #[derive(Deserialize)]
@@ -4268,6 +4269,9 @@ struct R2BackupConfigReq {
     /// 0 = 禁用定时备份
     #[serde(default)]
     schedule_hours: u32,
+    /// 0 = 不限制保留数量
+    #[serde(default)]
+    keep_count: u32,
 }
 
 fn to_r2_resp(c: &R2BackupConfig) -> R2BackupConfigResp {
@@ -4283,6 +4287,7 @@ fn to_r2_resp(c: &R2BackupConfig) -> R2BackupConfigResp {
         },
         path_prefix: c.path_prefix.clone(),
         schedule_hours: c.schedule_hours,
+        keep_count: c.keep_count,
     }
 }
 
@@ -4296,6 +4301,7 @@ async fn get_r2_backup_config(State(s): State<AppState>) -> ApiResult<Json<R2Bac
             secret_access_key: String::new(),
             path_prefix: String::new(),
             schedule_hours: 0,
+            keep_count: 0,
         },
         Some(ref c) => to_r2_resp(c),
     };
@@ -4340,6 +4346,7 @@ async fn put_r2_backup_config(
         secret_access_key: secret,
         path_prefix: req.path_prefix.trim().to_string(),
         schedule_hours: req.schedule_hours,
+        keep_count: req.keep_count,
     };
     let json_val = serde_json::to_string(&cfg)
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
