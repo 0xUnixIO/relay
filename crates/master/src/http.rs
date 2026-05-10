@@ -1082,16 +1082,16 @@ async fn server_info(State(s): State<AppState>) -> ApiResult<Json<ServerInfo>> {
         .cloned()
         .unwrap_or_else(|| "localhost".into());
     let grpc_port = port_of(&s.cfg.grpc_addr).unwrap_or(7443);
-    // When HTTP is bound to loopback, a reverse proxy (e.g. Caddy) is in front
-    // and the enrollment endpoint is reachable at the public HTTPS URL.
-    let http_is_local =
-        s.cfg.http_addr.starts_with("127.0.0.1") || s.cfg.http_addr.starts_with("[::1]");
-    let enroll_endpoint = if http_is_local {
-        format!("https://{public_host}/api/v1/enroll")
-    } else {
-        let http_port = port_of(&s.cfg.http_addr).unwrap_or(7080);
-        format!("http://{public_host}:{http_port}/api/v1/enroll")
-    };
+    // 节点 enroll endpoint 选择优先级：
+    //   1. 部署侧显式 MASTER_ENROLL_PUBLIC_URL（最准确，反代场景必填）
+    //   2. fallback：http://<public_host>:<http_port>/api/v1/enroll
+    //      —— 假设 7080 直接对外开（无反代）
+    let http_port = port_of(&s.cfg.http_addr).unwrap_or(7080);
+    let enroll_endpoint = s
+        .cfg
+        .enroll_public_url
+        .clone()
+        .unwrap_or_else(|| format!("http://{public_host}:{http_port}/api/v1/enroll"));
     let ca_pem = s.pki.ca_cert_pem.clone();
     let ca_b64 = base64::engine::general_purpose::STANDARD.encode(ca_pem.as_bytes());
     Ok(Json(ServerInfo {

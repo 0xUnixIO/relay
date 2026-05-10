@@ -10,6 +10,11 @@ pub struct Config {
     pub jwt_secret: String,
     pub pki_dir: PathBuf,
     pub public_addrs: Vec<String>,
+    /// 显式指定节点 enroll 时该走的 public URL（可选）。
+    /// 当部署侧已有反代（如 Caddy）伺候 HTTPS 时，operator 可以直接告诉
+    /// master 这个对外 URL，例如 `https://relay.example.com/api/v1/enroll`。
+    /// 留空时 master 退化为 `http://<public_host>:<http_port>/api/v1/enroll`。
+    pub enroll_public_url: Option<String>,
     /// 可选 Redis URL（如 `redis://:pw@127.0.0.1:6379/0`），仅用于轻量级缓存（probe 防抖等）。
     /// 留空时 master 完全不连 Redis，对应功能退化为无缓存。
     pub redis_url: Option<String>,
@@ -43,6 +48,10 @@ impl Config {
                 .unwrap_or_else(|_| "/var/lib/relay-master/pki".into())
                 .into(),
             public_addrs,
+            enroll_public_url: std::env::var("MASTER_ENROLL_PUBLIC_URL")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             redis_url: std::env::var("MASTER_REDIS_URL")
                 .ok()
                 .map(|s| s.trim().to_string())
