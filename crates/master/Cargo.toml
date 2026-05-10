@@ -8,6 +8,10 @@ license.workspace = true
 name = "relay-master"
 path = "src/main.rs"
 
+[[bin]]
+name = "relay-master-updater"
+path = "src/bin/relay_master_updater.rs"
+
 [dependencies]
 relay-proto.workspace = true
 relay-common.workspace = true
@@ -51,6 +55,7 @@ rust-embed = { version = "8.5", features = ["mime-guess"] }
 redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager"] }
 reqwest.workspace = true
 flate2.workspace = true
+tar = "0.4"
 
 [dev-dependencies]
 tempfile = "3.27.0"

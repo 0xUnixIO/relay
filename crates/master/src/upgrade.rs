@@ -63,10 +63,14 @@ pub struct ResolvedRelease {
     pub tag: String,
     pub prerelease: bool,
     pub published_at: Option<String>,
-    /// URL of `relay-${tag}-x86_64-unknown-linux-gnu.tar.gz`.
+    /// URL of `relay-node-${tag}-x86_64-unknown-linux-gnu.tar.gz`.
     pub linux_amd64_url: Option<String>,
-    /// URL of `relay-${tag}-aarch64-unknown-linux-gnu.tar.gz`.
+    /// URL of `relay-node-${tag}-aarch64-unknown-linux-gnu.tar.gz`.
     pub linux_arm64_url: Option<String>,
+    /// URL of `relay-master-${tag}-x86_64-unknown-linux-gnu.tar.gz`.
+    pub master_linux_amd64_url: Option<String>,
+    /// URL of `relay-master-${tag}-aarch64-unknown-linux-gnu.tar.gz`.
+    pub master_linux_arm64_url: Option<String>,
     pub sha256_url: Option<String>,
 }
 
@@ -89,24 +93,40 @@ struct GhAsset {
 
 impl From<GhRelease> for ResolvedRelease {
     fn from(r: GhRelease) -> Self {
-        let mut amd64 = None;
-        let mut arm64 = None;
+        let mut node_amd64 = None;
+        let mut node_arm64 = None;
+        let mut master_amd64 = None;
+        let mut master_arm64 = None;
         let mut sums = None;
         for a in r.assets {
             if a.name == "SHA256SUMS" {
                 sums = Some(a.browser_download_url);
-            } else if a.name.contains("x86_64-unknown-linux-gnu.tar.gz") {
-                amd64 = Some(a.browser_download_url);
-            } else if a.name.contains("aarch64-unknown-linux-gnu.tar.gz") {
-                arm64 = Some(a.browser_download_url);
+            } else if a.name.starts_with("relay-node-")
+                && a.name.ends_with("x86_64-unknown-linux-gnu.tar.gz")
+            {
+                node_amd64 = Some(a.browser_download_url);
+            } else if a.name.starts_with("relay-node-")
+                && a.name.ends_with("aarch64-unknown-linux-gnu.tar.gz")
+            {
+                node_arm64 = Some(a.browser_download_url);
+            } else if a.name.starts_with("relay-master-")
+                && a.name.ends_with("x86_64-unknown-linux-gnu.tar.gz")
+            {
+                master_amd64 = Some(a.browser_download_url);
+            } else if a.name.starts_with("relay-master-")
+                && a.name.ends_with("aarch64-unknown-linux-gnu.tar.gz")
+            {
+                master_arm64 = Some(a.browser_download_url);
             }
         }
         ResolvedRelease {
             tag: r.tag_name,
             prerelease: r.prerelease,
             published_at: r.published_at,
-            linux_amd64_url: amd64,
-            linux_arm64_url: arm64,
+            linux_amd64_url: node_amd64,
+            linux_arm64_url: node_arm64,
+            master_linux_amd64_url: master_amd64,
+            master_linux_arm64_url: master_arm64,
             sha256_url: sums,
         }
     }

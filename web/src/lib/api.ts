@@ -441,6 +441,11 @@ export const Api = {
       method: "PUT",
       body: JSON.stringify({ channel }),
     }),
+  selfUpgradeMaster: (target: string) =>
+    api<{ tag: string }>("/api/v1/system/self-upgrade", {
+      method: "POST",
+      body: JSON.stringify({ target }),
+    }),
   upgradeNode: (id: string, target: string) =>
     api<UpgradeJob>(`/api/v1/nodes/${id}/upgrade`, {
       method: "POST",
@@ -569,6 +574,8 @@ export interface ResolvedRelease {
   published_at: string | null;
   linux_amd64_url: string | null;
   linux_arm64_url: string | null;
+  master_linux_amd64_url: string | null;
+  master_linux_arm64_url: string | null;
   sha256_url: string | null;
 }
 

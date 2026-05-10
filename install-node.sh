@@ -191,7 +191,7 @@ if [[ "$VERSION" == "latest" ]]; then
   fi
 fi
 
-ARCHIVE="relay-${VERSION}-${TARGET}.tar.gz"
+ARCHIVE="relay-node-${VERSION}-${TARGET}.tar.gz"
 BASE="${GH}/$REPO/releases/download/$VERSION"
 
 log "installing relay-node $VERSION for $TARGET"
@@ -208,7 +208,7 @@ log "verifying sha256"
   || die "checksum mismatch"
 
 tar -xzf "$TMP/$ARCHIVE" -C "$TMP"
-DIR="$TMP/relay-${VERSION}-${TARGET}"
+DIR="$TMP/relay-node-${VERSION}-${TARGET}"
 [[ -f "$DIR/$BIN_NAME" ]] || die "$BIN_NAME not found in archive"
 
 RESTART=0

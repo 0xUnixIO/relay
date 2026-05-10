@@ -99,6 +99,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         )
         .route("/api/v1/user-groups/:id/apply", post(apply_group_tunnels))
         .route("/api/v1/system/version", get(get_system_version))
+        .route("/api/v1/system/self-upgrade", post(upgrade_self_handler))
         .route(
             "/api/v1/system/upgrade_channel",
             get(get_upgrade_channel).put(put_upgrade_channel),
@@ -4184,6 +4185,66 @@ async fn read_channel(db: &sqlx::PgPool) -> Result<String, sqlx::Error> {
             .fetch_optional(db)
             .await?;
     Ok(row.map(|r| r.0).unwrap_or_else(|| "stable".to_string()))
+}
+
+#[derive(Deserialize)]
+struct SelfUpgradeReq {
+    target: String, // "stable" | "rc" | "vX.Y.Z"
+}
+
+#[derive(Serialize)]
+struct SelfUpgradeResp {
+    tag: String,
+}
+
+async fn upgrade_self_handler(
+    State(s): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(req): Json<SelfUpgradeReq>,
+) -> ApiResult<impl IntoResponse> {
+    require_admin(&claims)?;
+
+    const REQ_PATH: &str = "/var/lib/relay-master/upgrade-request.json";
+    if std::path::Path::new(REQ_PATH).exists() {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "已有进行中的升级，请稍候",
+        ));
+    }
+
+    let resolved =
+        s.upgrade_resolver.resolve(&req.target).await.map_err(|e| {
+            ApiError::new(StatusCode::BAD_GATEWAY, format!("无法解析目标版本：{e}"))
+        })?;
+
+    let amd64_url = resolved.master_linux_amd64_url.as_deref().ok_or_else(|| {
+        ApiError::new(StatusCode::CONFLICT, "目标 release 缺少 master/amd64 资产")
+    })?;
+    let arm64_url = resolved.master_linux_arm64_url.as_deref().ok_or_else(|| {
+        ApiError::new(StatusCode::CONFLICT, "目标 release 缺少 master/arm64 资产")
+    })?;
+    let sha_url = resolved
+        .sha256_url
+        .as_deref()
+        .ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "目标 release 缺少 SHA256SUMS 资产"))?;
+
+    let body = serde_json::json!({
+        "tag": resolved.tag,
+        "asset_url_amd64": amd64_url,
+        "asset_url_arm64": arm64_url,
+        "sha256_url": sha_url,
+    });
+    std::fs::write(REQ_PATH, body.to_string()).map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("写入升级请求失败：{e}"),
+        )
+    })?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(SelfUpgradeResp { tag: resolved.tag }),
+    ))
 }
 
 #[derive(Serialize)]

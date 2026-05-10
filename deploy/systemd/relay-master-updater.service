@@ -1,0 +1,17 @@
+[Unit]
+Description=Apply pending relay-master upgrade
+Documentation=https://github.com/unix-relay/relay
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/relay-master/upgrade-request.json
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/lib/relay-master/relay-master-updater
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

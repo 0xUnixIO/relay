@@ -1,5 +1,5 @@
-// relay-node-updater — runs as root, triggered by systemd path unit.
-// 零外部工具依赖（不需要 jq / python3），始终在退出前删除请求文件。
+// relay-master-updater — runs as root, triggered by systemd path unit.
+// 零外部工具依赖，始终在退出前删除请求文件。
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
@@ -12,16 +12,15 @@ use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const REQ: &str = "/var/lib/relay-node/upgrade-request.json";
-const STATUS: &str = "/var/lib/relay-node/upgrade-status.json";
-const LIB_DIR: &str = "/usr/local/lib/relay-node";
-const BIN_LINK: &str = "/usr/local/bin/relay-node";
-const SELF_PATH: &str = "/usr/local/lib/relay-node/relay-node-updater";
-const UNIT: &str = "relay-node";
+const REQ: &str = "/var/lib/relay-master/upgrade-request.json";
+const STATUS: &str = "/var/lib/relay-master/upgrade-status.json";
+const LIB_DIR: &str = "/usr/local/lib/relay-master";
+const BIN_LINK: &str = "/usr/local/bin/relay-master";
+const SELF_PATH: &str = "/usr/local/lib/relay-master/relay-master-updater";
+const UNIT: &str = "relay-master";
 
 #[derive(Deserialize)]
 struct UpgradeRequest {
-    job_id: i64,
     tag: String,
     asset_url_amd64: String,
     asset_url_arm64: String,
@@ -30,7 +29,7 @@ struct UpgradeRequest {
 
 #[derive(Serialize)]
 struct UpgradeStatus {
-    job_id: i64,
+    tag: String,
     state: String,
     error: String,
     completed_at: String,
@@ -80,7 +79,6 @@ fn utc_now_rfc3339() -> String {
         month += 1;
     }
     let day = (days + 1) as u32;
-
     format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
@@ -88,9 +86,9 @@ fn is_leap(y: u32) -> bool {
     y.is_multiple_of(4) && !y.is_multiple_of(100) || y.is_multiple_of(400)
 }
 
-fn write_status(job_id: i64, state: &str, error: &str) {
+fn write_status(tag: &str, state: &str, error: &str) {
     let status = UpgradeStatus {
-        job_id,
+        tag: tag.to_string(),
         state: state.to_string(),
         error: error.to_string(),
         completed_at: utc_now_rfc3339(),
@@ -183,7 +181,6 @@ fn verify_sha256(data: &[u8], sums: &[u8], filename: &str) -> Result<()> {
     let expected = sums_str
         .lines()
         .filter_map(|line| {
-            // Format: "<hash>  <filename>" (two spaces) or "<hash> <filename>"
             let line = line.trim();
             let (hash, fname) = line.split_once("  ").or_else(|| line.split_once(' '))?;
             (fname.trim() == filename).then(|| hash.trim().to_string())
@@ -268,7 +265,7 @@ async fn do_upgrade(req: &UpgradeRequest) -> Result<()> {
         Arch::Arm64 => &req.asset_url_arm64,
     };
 
-    let expected_basename = format!("relay-node-{}-{target}.tar.gz", req.tag);
+    let expected_basename = format!("relay-master-{}-{target}.tar.gz", req.tag);
     if !asset_url.ends_with(&format!("/{expected_basename}")) {
         bail!("asset_url basename mismatch (expected {expected_basename})");
     }
@@ -288,23 +285,20 @@ async fn do_upgrade(req: &UpgradeRequest) -> Result<()> {
     log("verifying SHA256");
     verify_sha256(&tar_data, &sums_data, &expected_basename)?;
 
-    log("extracting relay-node");
-    let node_bin = extract_binary_from_tar(&tar_data, "relay-node")
-        .context("relay-node not found in archive")?;
+    log("extracting relay-master");
+    let master_bin = extract_binary_from_tar(&tar_data, "relay-master")
+        .context("relay-master not found in archive")?;
 
-    // Install versioned copy
-    let dest_dir = format!("{LIB_DIR}/relay-node-{}", req.tag);
+    let dest_dir = format!("{LIB_DIR}/relay-master-{}", req.tag);
     fs::create_dir_all(&dest_dir).with_context(|| format!("mkdir -p {dest_dir}"))?;
-    let dest_bin = format!("{dest_dir}/relay-node");
-    atomic_write(&node_bin, &dest_bin, 0o755).context("install relay-node binary")?;
+    let dest_bin = format!("{dest_dir}/relay-master");
+    atomic_write(&master_bin, &dest_bin, 0o755).context("install relay-master binary")?;
 
-    // Self-update: also replace this binary if present in archive
-    if let Some(updater_bin) = extract_binary_from_tar(&tar_data, "relay-node-updater") {
-        log("self-updating relay-node-updater");
+    if let Some(updater_bin) = extract_binary_from_tar(&tar_data, "relay-master-updater") {
+        log("self-updating relay-master-updater");
         let _ = atomic_write(&updater_bin, SELF_PATH, 0o755);
     }
 
-    // Capture previous symlink target for rollback
     let prev_target = fs::read_link(BIN_LINK).ok();
 
     log(&format!("stopping {UNIT}"));
@@ -356,13 +350,12 @@ async fn main() {
         }
     };
 
-    let job_id = req.job_id;
+    let tag = req.tag.clone();
     let result = do_upgrade(&req).await;
 
-    // 始终先写状态，再删除请求文件（无论成败）
     match &result {
-        Ok(()) => write_status(job_id, "installed", ""),
-        Err(e) => write_status(job_id, "failed", &format!("{e:#}")),
+        Ok(()) => write_status(&tag, "installed", ""),
+        Err(e) => write_status(&tag, "failed", &format!("{e:#}")),
     }
     let _ = fs::remove_file(REQ);
 

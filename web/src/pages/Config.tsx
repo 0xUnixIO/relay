@@ -1,7 +1,7 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
-import { Copy, Check, Play, RefreshCw, FolderSearch } from "lucide-react";
+import { Copy, Check, Play, RefreshCw, FolderSearch, Rocket } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Api, ApiError, type BackupJob } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -57,6 +57,9 @@ export default function ConfigPage() {
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [confirmKey, setConfirmKey] = useState<string | null>(null);
   const [restoringKey, setRestoringKey] = useState<string | null>(null);
+  const [selfUpgrading, setSelfUpgrading] = useState(false);
+  const [upgradeConfirmOpen, setUpgradeConfirmOpen] = useState(false);
+  const [selfUpgradeTarget, setSelfUpgradeTarget] = useState<"stable" | "rc">("stable");
 
   const effectiveEnabled = enabled ?? cfg?.announcement_enabled ?? false;
   const effectiveTitle = title ?? cfg?.announcement_title ?? "";
@@ -111,6 +114,30 @@ export default function ConfigPage() {
     } catch {
       toast.error("复制失败");
     }
+  };
+
+  const doSelfUpgrade = async () => {
+    setUpgradeConfirmOpen(false);
+    setSelfUpgrading(true);
+    try {
+      await Api.selfUpgradeMaster(selfUpgradeTarget);
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : String(e));
+      setSelfUpgrading(false);
+      return;
+    }
+    // Master is restarting — poll /health until it comes back, then reload
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch("/health");
+        if (r.ok) {
+          clearInterval(poll);
+          window.location.reload();
+        }
+      } catch {
+        // still restarting
+      }
+    }, 2000);
   };
 
   const effectiveBrand = brandDraft ?? branding?.brand_name ?? "RELAY";
@@ -211,7 +238,36 @@ export default function ConfigPage() {
     return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
   };
 
+  const upgradeTargetTag = selfUpgradeTarget === "stable"
+    ? sysVersion?.latest_stable?.tag
+    : sysVersion?.latest_rc?.tag;
+
   return (
+    <>
+    {/* 重连遮罩 */}
+    {selfUpgrading && (
+      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/90 backdrop-blur-sm">
+        <RefreshCw className="h-10 w-10 animate-spin text-primary mb-4" />
+        <p className="text-lg font-medium">Master 正在重启…</p>
+        <p className="text-sm text-muted-foreground mt-1">升级完成后页面将自动刷新</p>
+      </div>
+    )}
+    {/* 升级确认对话框 */}
+    <Dialog open={upgradeConfirmOpen} onOpenChange={setUpgradeConfirmOpen}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>确认升级 Master</DialogTitle>
+          <DialogDescription>
+            将升级到 <span className="font-mono font-medium">{upgradeTargetTag}</span>，
+            Master 服务将重启约 30 秒，期间面板不可用。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex justify-end gap-2 mt-2">
+          <Button variant="outline" onClick={() => setUpgradeConfirmOpen(false)}>取消</Button>
+          <Button onClick={doSelfUpgrade}>确认升级</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
     <div className="space-y-6 max-w-2xl">
       <div>
         <h1 className="text-xl font-semibold">系统配置</h1>
@@ -350,7 +406,7 @@ export default function ConfigPage() {
             </Badge>
           </CardTitle>
           <CardDescription>
-            Master 端不支持远程升级，请 SSH 到 master 服务器手动执行下列命令。
+            一键升级或手动 SSH 执行命令。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -396,6 +452,23 @@ export default function ConfigPage() {
               {sysVersion?.latest_rc?.tag && <> · 最新预发布：{sysVersion.latest_rc.tag}</>}
             </p>
           )}
+          <div className="flex gap-2">
+            {(["stable", "rc"] as const).map((ch) => {
+              const tag = ch === "stable" ? sysVersion?.latest_stable?.tag : sysVersion?.latest_rc?.tag;
+              if (!tag) return null;
+              return (
+                <Button
+                  key={ch}
+                  size="sm"
+                  variant="outline"
+                  onClick={() => { setSelfUpgradeTarget(ch); setUpgradeConfirmOpen(true); }}
+                >
+                  <Rocket className="h-3.5 w-3.5 mr-1.5" />
+                  升级到 {tag}
+                </Button>
+              );
+            })}
+          </div>
         </CardContent>
       </Card>
       <Card>
@@ -590,5 +663,6 @@ export default function ConfigPage() {
         </CardContent>
       </Card>
     </div>
+    </>
   );
 }
