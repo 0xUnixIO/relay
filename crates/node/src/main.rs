@@ -196,7 +196,7 @@ async fn run_session(
     let stats_tx = tx.clone();
     let stats_engine = engine.clone();
     let stats_handle = tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        let mut tick = tokio::time::interval(Duration::from_secs(30));
         tick.tick().await;
         loop {
             tick.tick().await;
