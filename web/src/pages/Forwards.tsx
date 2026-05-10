@@ -3,7 +3,7 @@ import { useForwardStats } from "@/hooks/useForwardStats";
 import { useConfirm } from "@/hooks/useConfirm";
 import useSWR from "swr";
 import {
-  Plus, Pencil, Trash2, Pause, Play, RefreshCw, Activity, Shuffle, Check, Network, MoreHorizontal,
+  Plus, Pencil, Trash2, Pause, Play, RefreshCw, Activity, Shuffle, Check, Network, MoreHorizontal, BarChart2,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -26,7 +26,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  Api, type Forward, type Tunnel, type NodeInfo,
+  Api, type Forward, type Tunnel, type NodeInfo, type ForwardStatBucket,
 } from "@/lib/api";
 import { getRole } from "@/lib/auth";
 import { toast } from "sonner";
@@ -95,6 +95,7 @@ export default function ForwardsPage() {
     forward: Forward;
     hops: import("@/lib/api").ForwardProbeHop[];
   } | null>(null);
+  const [statsTarget, setStatsTarget] = useState<Forward | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
   const copy = (key: string, text: string) => {
@@ -382,6 +383,9 @@ export default function ForwardsPage() {
                         <TableCell className="text-right font-mono text-xs whitespace-nowrap">{f.active_connections}</TableCell>
                         <TableCell className="whitespace-nowrap text-right">
                           <div className="inline-flex items-center gap-1">
+                            <Button size="icon" variant="ghost" onClick={() => setStatsTarget(f)} title="流量趋势">
+                              <BarChart2 className="h-4 w-4" />
+                            </Button>
                             <Button size="icon" variant="ghost" onClick={() => probe(f)} disabled={!!probing[f.id]} title="探测上游延迟">
                               <Activity className={`h-4 w-4 ${probing[f.id] ? "animate-pulse" : ""}`} />
                             </Button>
@@ -524,6 +528,22 @@ export default function ForwardsPage() {
             <Button onClick={submit} disabled={saving}>
               {saving ? "保存中…" : "保存"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 流量趋势 */}
+      <Dialog open={!!statsTarget} onOpenChange={(v) => !v && setStatsTarget(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <BarChart2 className="h-4 w-4" />
+              流量趋势 · {statsTarget?.name}
+            </DialogTitle>
+          </DialogHeader>
+          {statsTarget && <ForwardStatsChart forwardId={statsTarget.id} />}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setStatsTarget(null)}>关闭</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -712,6 +732,93 @@ function ProbeTopology({ hops }: { hops: ForwardProbeHop[] }) {
             {(total / 1000).toFixed(1)} ms
           </span>
         </div>
+      )}
+    </div>
+  );
+}
+
+// ── 流量趋势图表 ──────────────────────────────────────────────────────────────
+
+import {
+  AreaChart, Area, XAxis, YAxis, Tooltip as ReTooltip,
+  ResponsiveContainer, CartesianGrid,
+} from "recharts";
+
+type Period = "1h" | "24h" | "7d";
+
+function ForwardStatsChart({ forwardId }: { forwardId: string }) {
+  const [period, setPeriod] = useState<Period>("1h");
+  const [data, setData] = useState<ForwardStatBucket[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    Api.getForwardStats(forwardId, period)
+      .then(setData)
+      .catch(() => setData([]))
+      .finally(() => setLoading(false));
+  }, [forwardId, period]);
+
+  const fmt = (ts: string) => {
+    const d = new Date(ts);
+    if (period === "7d")  return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:00`;
+    if (period === "24h") return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+    return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+
+  const fmtBytes = (n: number) => {
+    if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} GB`;
+    if (n >= 1048576)    return `${(n / 1048576).toFixed(1)} MB`;
+    if (n >= 1024)       return `${(n / 1024).toFixed(1)} KB`;
+    return `${n} B`;
+  };
+
+  const chartData = data.map((b) => ({
+    ts: fmt(b.ts),
+    下载: b.bytes_in,
+    上传: b.bytes_out,
+  }));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1">
+        {(["1h", "24h", "7d"] as Period[]).map((p) => (
+          <Button key={p} size="sm" variant={period === p ? "default" : "outline"}
+            onClick={() => setPeriod(p)}>
+            {p === "1h" ? "1 小时" : p === "24h" ? "24 小时" : "7 天"}
+          </Button>
+        ))}
+      </div>
+      {loading ? (
+        <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">加载中…</div>
+      ) : data.length === 0 ? (
+        <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">
+          暂无历史数据（数据每分钟写入一次）
+        </div>
+      ) : (
+        <ResponsiveContainer width="100%" height={200}>
+          <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
+            <defs>
+              <linearGradient id="gi" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%"  stopColor="hsl(142 76% 36%)" stopOpacity={0.3} />
+                <stop offset="95%" stopColor="hsl(142 76% 36%)" stopOpacity={0} />
+              </linearGradient>
+              <linearGradient id="go" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%"  stopColor="hsl(199 78% 44%)" stopOpacity={0.3} />
+                <stop offset="95%" stopColor="hsl(199 78% 44%)" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+            <XAxis dataKey="ts" tick={{ fontSize: 11 }} tickLine={false} />
+            <YAxis tickFormatter={fmtBytes} tick={{ fontSize: 11 }} width={64} tickLine={false} axisLine={false} />
+            <ReTooltip
+              formatter={(v, name) => [fmtBytes(Number(v)), String(name)]}
+              contentStyle={{ background: "hsl(var(--background))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
+            />
+            <Area type="monotone" dataKey="下载" stroke="hsl(142 76% 36%)" fill="url(#gi)" strokeWidth={1.5} dot={false} />
+            <Area type="monotone" dataKey="上传" stroke="hsl(199 78% 44%)"  fill="url(#go)" strokeWidth={1.5} dot={false} />
+          </AreaChart>
+        </ResponsiveContainer>
       )}
     </div>
   );
