@@ -29,7 +29,6 @@ dev: web-install ## Run master + node + web concurrently (Ctrl-C to stop all)
 	    RUST_LOG=$${RUST_LOG:-info} \
 	    NODE_PKI_DIR=$(DEV_NODE_PKI) \
 	    NODE_MASTER_ENDPOINT=https://127.0.0.1:7443 \
-	    NODE_MASTER_ENROLL_ENDPOINT=https://127.0.0.1:7444 \
 	    NODE_MASTER_SERVER_NAME=127.0.0.1 \
 	    NODE_CA_CERT_B64=$$(base64 < $(DEV_MASTER_PKI)/ca.crt | tr -d '\n') \
 	    $(CARGO) run -q -p relay-node 2>&1 | sed -u 's/^/[node]   /' ) & \
@@ -50,7 +49,6 @@ dev-node: ## Run only the node agent (requires master + seed-dev-node first)
 	set -a; . ./.relay-dev.env; set +a; \
 	  NODE_PKI_DIR=$(DEV_NODE_PKI) \
 	  NODE_MASTER_ENDPOINT=https://127.0.0.1:7443 \
-	  NODE_MASTER_ENROLL_ENDPOINT=https://127.0.0.1:7444 \
 	  NODE_MASTER_SERVER_NAME=127.0.0.1 \
 	  NODE_CA_CERT_B64=$$(base64 < $(DEV_MASTER_PKI)/ca.crt | tr -d '\n') \
 	  $(CARGO) run -p relay-node
