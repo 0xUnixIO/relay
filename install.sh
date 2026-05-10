@@ -362,6 +362,28 @@ if [[ "$INTERACTIVE" -eq 0 ]]; then
     write_placeholder_env
   else
     log "$ENV_FILE already exists, leaving untouched"
+    # v0.1.2+ 引入了 MASTER_ENROLL_PUBLIC_URL；旧 env 缺这一项时按现状回填。
+    if ! grep -qE '^MASTER_ENROLL_PUBLIC_URL=' "$ENV_FILE"; then
+      _existing_pub="$(grep -E '^MASTER_PUBLIC_ADDR=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
+      _existing_pub="${_existing_pub%%,*}"
+      _caddy_conf="/etc/caddy/conf.d/relay.caddyfile"
+      _caddy_domain=""
+      [[ -f "$_caddy_conf" ]] && \
+        _caddy_domain="$(grep -vE '^\s*#|^\s*$' "$_caddy_conf" | awk '/\{/{print $1; exit}')"
+      if [[ -n "$_caddy_domain" ]]; then
+        _enroll_url="https://${_caddy_domain}/api/v1/enroll"
+      elif [[ -n "$_existing_pub" ]]; then
+        _enroll_url="http://${_existing_pub}:7080/api/v1/enroll"
+      else
+        _enroll_url=""
+      fi
+      if [[ -n "$_enroll_url" ]]; then
+        log "回填 MASTER_ENROLL_PUBLIC_URL=$_enroll_url 到 $ENV_FILE"
+        printf '\nMASTER_ENROLL_PUBLIC_URL=%s\n' "$_enroll_url" >> "$ENV_FILE"
+      else
+        warn "无法推断 MASTER_ENROLL_PUBLIC_URL；请手动在 $ENV_FILE 中设置该项以保证节点 enroll 可达"
+      fi
+    fi
   fi
 else
   command -v openssl >/dev/null || die "openssl is required for interactive setup"
