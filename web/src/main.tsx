@@ -8,3 +8,8 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <App />
   </React.StrictMode>,
 );
+
+// React 第一帧渲染完（BootSplash 已可见）后移除原生 pre-splash
+requestAnimationFrame(() => {
+  document.getElementById("pre-splash")?.remove();
+});
