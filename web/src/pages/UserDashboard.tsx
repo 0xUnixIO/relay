@@ -1,7 +1,7 @@
 import useSWR from "swr";
 import ReactMarkdown from "react-markdown";
 import { Api } from "@/lib/api";
-import { Network, Zap, Activity, Megaphone } from "lucide-react";
+import { Network, Megaphone } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { ProtocolSetBadge } from "@/components/ui/protocol-set-badge";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -97,27 +97,25 @@ export default function UserDashboard() {
           </div>
         )}
         <div className="rounded-lg border p-4 space-y-1">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Network className="h-3.5 w-3.5" /> 我的转发
-          </div>
+          <div className="text-sm text-muted-foreground">我的转发</div>
           <div className="text-2xl font-semibold tabular-nums">{enabled.length} / {forwards.length}</div>
-          <div className="text-sm text-muted-foreground">
-            {forwards.length === 0 ? "暂无转发" : `${forwards.length - enabled.length} 已停用`}
-          </div>
         </div>
         <div className="rounded-lg border p-4 space-y-1">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Zap className="h-3.5 w-3.5" /> 活跃连接
-          </div>
+          <div className="text-sm text-muted-foreground">活跃连接</div>
           <div className="text-2xl font-semibold tabular-nums">{totalConns}</div>
-          <div className="text-sm text-muted-foreground">所有转发合计</div>
         </div>
-        <div className="rounded-lg border p-4 space-y-1 col-span-2 sm:col-span-1">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Activity className="h-3.5 w-3.5" /> 总流量
+        <div className="rounded-lg border p-4 space-y-2 col-span-2 sm:col-span-1">
+          <div className="text-sm text-muted-foreground">总流量</div>
+          <div className="space-y-0.5 text-sm tabular-nums">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">↓ 下载</span>
+              <span className="font-semibold">{fmtBytes(totalIn)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">↑ 上传</span>
+              <span className="font-semibold">{fmtBytes(totalOut)}</span>
+            </div>
           </div>
-          <div className="text-lg font-semibold tabular-nums">↓ {fmtBytes(totalIn)}</div>
-          <div className="text-sm text-muted-foreground">↑ {fmtBytes(totalOut)}</div>
         </div>
       </div>
 
@@ -132,10 +130,6 @@ export default function UserDashboard() {
                 <div className="flex items-center gap-3 min-w-0">
                   <ProtocolSetBadge protocols={f.protocols} />
                   <span className="font-medium truncate">{f.name}</span>
-                  <span className="font-mono text-xs text-muted-foreground hidden sm:block">
-                    :{f.in_port} → {f.remote_addrs?.[0] ?? "—"}
-                    {f.remote_addrs?.length > 1 && ` +${f.remote_addrs.length - 1}`}
-                  </span>
                 </div>
                 <div className="flex items-center gap-3 shrink-0 ml-4">
                   <span className="text-sm text-muted-foreground tabular-nums hidden sm:block">
