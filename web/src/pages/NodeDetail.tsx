@@ -92,10 +92,6 @@ export default function NodeDetail() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const navigate = useNavigate();
   const [upgradeOpen, setUpgradeOpen] = useState(false);
-  const { data: upgradeJobs = [] } = useSWR(
-    id ? ["node-upgrade-jobs", id] : null,
-    () => Api.listNodeUpgradeJobs(id!, 5),
-  );
   const { setupUrl, mirrorUrl, setMirrorUrl, cmdCopied, generateSetup, copyCmd: copyReenrollCmd } =
     useSetupLink(serverInfo?.enroll_endpoint);
   const [ipsInput, setIpsInput] = useState<string[]>([]);
@@ -385,54 +381,6 @@ export default function NodeDetail() {
           </DropdownMenu>
         </div>
       </div>
-
-      {upgradeJobs.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">最近升级记录</CardTitle>
-            <CardDescription>近 {upgradeJobs.length} 条</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-1.5">
-              {upgradeJobs.map((j) => {
-                const variant: "success" | "destructive" | "outline" =
-                  j.state === "succeeded"
-                    ? "success"
-                    : j.state === "failed" || j.state === "timed_out"
-                      ? "destructive"
-                      : "outline";
-                const label: Record<typeof j.state, string> = {
-                  queued: "排队中",
-                  dispatched: "已下发",
-                  accepted: "已接受",
-                  succeeded: "成功",
-                  failed: "失败",
-                  timed_out: "超时",
-                };
-                return (
-                  <div
-                    key={j.id}
-                    className="flex items-center gap-3 rounded-md border px-3 py-1.5 text-sm"
-                  >
-                    <Badge variant={variant} className="flex-shrink-0">
-                      {label[j.state]}
-                    </Badge>
-                    <span className="font-mono text-xs">{j.target_tag}</span>
-                    <span className="ml-auto text-xs text-muted-foreground">
-                      {timeAgo(j.requested_at)}
-                    </span>
-                    {j.error && (
-                      <span className="ml-2 truncate text-xs text-destructive max-w-[40%]">
-                        {j.error}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       <Card>
         <CardHeader>
