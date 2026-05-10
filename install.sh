@@ -248,6 +248,23 @@ case "$OS-$ARCH" in
   *) die "unsupported platform: $OS $ARCH" ;;
 esac
 
+# minimal Debian/Ubuntu 镜像可能没装 curl/tar，先把基础工具补齐。
+ensure_base_pkgs() {
+  local need=()
+  command -v curl       >/dev/null || need+=(curl)
+  command -v tar        >/dev/null || need+=(tar)
+  command -v sha256sum  >/dev/null || need+=(coreutils)
+  [[ -e /etc/ssl/certs/ca-certificates.crt ]] || need+=(ca-certificates)
+  [[ ${#need[@]} -eq 0 ]] && return 0
+  if [[ "$EUID" -ne 0 ]] || ! command -v apt-get >/dev/null; then
+    return 0  # 让后面的 command -v 检查报错给用户
+  fi
+  log "安装基础依赖: ${need[*]}"
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${need[@]}" >/dev/null
+}
+ensure_base_pkgs
+
 command -v curl       >/dev/null || die "curl is required"
 command -v tar        >/dev/null || die "tar is required"
 command -v sha256sum  >/dev/null || die "sha256sum is required (coreutils)"
