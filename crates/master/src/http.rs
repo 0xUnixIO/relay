@@ -103,7 +103,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
             "/api/v1/system/upgrade_channel",
             get(get_upgrade_channel).put(put_upgrade_channel),
         )
-        .route("/api/v1/nodes/:id/setup", post(create_install_bundle))
+        .route("/api/v1/nodes/:id/setup", post(create_setup))
         .route("/api/v1/nodes/:id/upgrade", post(create_node_upgrade))
         .route(
             "/api/v1/nodes/:id/upgrade/jobs",
@@ -158,7 +158,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .route("/api/v1/auth/bootstrap", post(bootstrap_admin))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/enroll", post(crate::enroll::enroll_handler))
-        .route("/api/v1/setup/:token", get(get_install_bundle))
+        .route("/api/v1/setup/:token", get(get_setup))
         .route("/api/v1/system/branding", get(get_branding))
         .route("/scripts/:name", get(proxy_script));
 
@@ -1112,7 +1112,7 @@ fn port_of(addr: &str) -> Option<u16> {
     addr.rsplit_once(':')?.1.parse().ok()
 }
 
-async fn create_install_bundle(
+async fn create_setup(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
@@ -1146,9 +1146,9 @@ async fn create_install_bundle(
         hex::encode(buf)
     };
 
-    s.install_bundles.write().await.insert(
+    s.setup_tokens.write().await.insert(
         token.clone(),
-        crate::state::InstallBundleEntry {
+        crate::state::SetupEntry {
             node_id: id,
             enrollment_token,
             master_endpoint: format!("https://{public_host}:{grpc_port}"),
@@ -1162,7 +1162,7 @@ async fn create_install_bundle(
 }
 
 #[derive(Serialize)]
-struct InstallBundlePayload {
+struct SetupPayload {
     master: String,
     enroll: String,
     node_id: String,
@@ -1170,18 +1170,18 @@ struct InstallBundlePayload {
     ca_cert: String,
 }
 
-async fn get_install_bundle(
+async fn get_setup(
     State(s): State<AppState>,
     Path(token): Path<String>,
-) -> ApiResult<Json<InstallBundlePayload>> {
-    let bundles = s.install_bundles.read().await;
+) -> ApiResult<Json<SetupPayload>> {
+    let bundles = s.setup_tokens.read().await;
     let entry = bundles
         .get(&token)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "安装包不存在或已过期"))?;
     if entry.created_at.elapsed() > std::time::Duration::from_secs(86400) {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "安装包已过期"));
     }
-    Ok(Json(InstallBundlePayload {
+    Ok(Json(SetupPayload {
         master: entry.master_endpoint.clone(),
         enroll: entry.enroll_endpoint.clone(),
         node_id: entry.node_id.clone(),

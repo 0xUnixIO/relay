@@ -22,7 +22,7 @@
 #                          alias: --master-enroll-endpoint
 #   --version <tag>        pin a specific release tag (default: latest)
 #   --repo <owner/name>    override the GitHub repo (default: 0xUnixIO/relay)
-#   --bundle <url>         一键安装链接（从 master Web UI 复制），包含所有安装参数
+#   --setup <url>          一键安装链接（从 master Web UI 复制），包含所有安装参数
 #   --mirror <url>         GitHub 镜像前缀，用于国内加速（如 https://ghproxy.com/）
 #   --update               upgrade-only: keep existing env / pki, no enrollment args needed
 #   --non-interactive      never prompt (for automated callers like the updater)
@@ -41,7 +41,7 @@ NODE_ID=""
 NODE_TOKEN=""
 NODE_CA_CERT_B64=""
 ENROLL_ENDPOINT=""
-BUNDLE_URL=""
+SETUP_URL=""
 MIRROR=""
 START=1
 UNINSTALL=0
@@ -58,7 +58,7 @@ while [[ $# -gt 0 ]]; do
     --node-id)         NODE_ID="$2"; shift 2 ;;
     --token)           NODE_TOKEN="$2"; shift 2 ;;
     --ca-cert)         NODE_CA_CERT_B64="$2"; shift 2 ;;
-    --bundle)           BUNDLE_URL="$2"; shift 2 ;;
+    --setup)            SETUP_URL="$2"; shift 2 ;;
     --enroll|--master-enroll-endpoint)
                        ENROLL_ENDPOINT="$2"; shift 2 ;;
     --version)         VERSION="$2"; shift 2 ;;
@@ -168,14 +168,14 @@ command -v tar        >/dev/null || die "tar is required"
 command -v sha256sum  >/dev/null || die "sha256sum is required (coreutils)"
 command -v systemctl  >/dev/null || die "systemd is required"
 
-if [[ -n "$BUNDLE_URL" ]]; then
-  log "fetching install bundle"
-  BUNDLE_JSON="$(curl -fsSL "$BUNDLE_URL")" || die "无法获取安装包，请检查链接是否有效"
-  MASTER="$(          echo "$BUNDLE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['master'])")"
-  ENROLL_ENDPOINT="$( echo "$BUNDLE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['enroll'])")"
-  NODE_ID="$(         echo "$BUNDLE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['node_id'])")"
-  NODE_TOKEN="$(      echo "$BUNDLE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")"
-  NODE_CA_CERT_B64="$(echo "$BUNDLE_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['ca_cert'])")"
+if [[ -n "$SETUP_URL" ]]; then
+  log "fetching setup parameters"
+  SETUP_JSON="$(curl -fsSL "$SETUP_URL")" || die "无法获取安装链接，请检查链接是否有效"
+  MASTER="$(          echo "$SETUP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['master'])")"
+  ENROLL_ENDPOINT="$( echo "$SETUP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['enroll'])")"
+  NODE_ID="$(         echo "$SETUP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['node_id'])")"
+  NODE_TOKEN="$(      echo "$SETUP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")"
+  NODE_CA_CERT_B64="$(echo "$SETUP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['ca_cert'])")"
 fi
 
 if [[ "$VERSION" == "latest" ]]; then

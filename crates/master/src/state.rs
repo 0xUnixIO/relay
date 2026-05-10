@@ -15,7 +15,7 @@ use crate::series::{CounterDeltas, SeriesStore};
 use crate::upgrade::UpgradeResolver;
 
 #[derive(Clone)]
-pub struct InstallBundleEntry {
+pub struct SetupEntry {
     pub node_id: String,
     pub enrollment_token: String,
     pub master_endpoint: String,
@@ -56,8 +56,8 @@ pub struct AppState {
     pub upgrade_resolver: UpgradeResolver,
     /// 手动触发备份的通知信道。
     pub backup_trigger: Arc<Notify>,
-    /// 一次性安装包：token → 安装参数，有效期 24h。
-    pub install_bundles: Arc<RwLock<HashMap<String, InstallBundleEntry>>>,
+    /// setup token → 安装参数，有效期 24h。
+    pub setup_tokens: Arc<RwLock<HashMap<String, SetupEntry>>>,
 }
 
 impl AppState {
@@ -74,7 +74,7 @@ impl AppState {
             availability_seen: Arc::new(Mutex::new(HashSet::new())),
             upgrade_resolver: UpgradeResolver::new(crate::upgrade::DEFAULT_REPO),
             backup_trigger: Arc::new(Notify::new()),
-            install_bundles: Arc::new(RwLock::new(HashMap::new())),
+            setup_tokens: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

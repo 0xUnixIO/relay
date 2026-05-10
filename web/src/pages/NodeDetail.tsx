@@ -40,6 +40,8 @@ import {
   type RotateTokenResp,
 } from "@/lib/api";
 import { toast } from "sonner";
+import { useSetupLink } from "@/hooks/useSetupLink";
+import { ShellCmd } from "@/components/ShellCmd";
 
 function isOnline(n: NodeInfo): boolean {
   if (!n.last_seen_at) return false;
@@ -94,8 +96,8 @@ export default function NodeDetail() {
     id ? ["node-upgrade-jobs", id] : null,
     () => Api.listNodeUpgradeJobs(id!, 5),
   );
-  const [cmdCopied, setCmdCopied] = useState(false);
-  const [mirrorUrl, setMirrorUrl] = useState("");
+  const { setupUrl, mirrorUrl, setMirrorUrl, cmdCopied, generateSetup, copyCmd: copyReenrollCmd } =
+    useSetupLink(serverInfo?.enroll_endpoint);
   const [ipsInput, setIpsInput] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [prStart, setPrStart] = useState<number | "">("");
@@ -245,6 +247,7 @@ export default function NodeDetail() {
       const resp = await Api.rotateNodeToken(id);
       setRotated(resp);
       mutateNode();
+      generateSetup(resp.id);
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : String(e));
     }
@@ -263,28 +266,6 @@ export default function NodeDetail() {
     }
   };
 
-  const reenrollCmd = (r: RotateTokenResp, mirror = mirrorUrl): string => {
-    if (!serverInfo) return "// fetching server info…";
-    const lines = [
-      `bash <(curl -fsSL https://raw.githubusercontent.com/0xUnixIO/relay/main/install-node.sh) \\`,
-      `  --master ${serverInfo.master_endpoint} \\`,
-      `  --master-enroll-endpoint ${serverInfo.enroll_endpoint} \\`,
-      `  --node-id ${r.id} \\`,
-      `  --token ${r.enrollment_token} \\`,
-      `  --ca-cert ${serverInfo.ca_cert_b64}`,
-    ];
-    if (mirror.trim()) {
-      lines[lines.length - 1] += " \\";
-      lines.push(`  --mirror ${mirror.trim()}`);
-    }
-    return lines.join("\n");
-  };
-  const copyReenrollCmd = () => {
-    if (!rotated) return;
-    navigator.clipboard.writeText(reenrollCmd(rotated));
-    setCmdCopied(true);
-    setTimeout(() => setCmdCopied(false), 2000);
-  };
 
   if (!node) {
     return <div className="text-sm text-muted-foreground">加载中…</div>;
@@ -776,11 +757,9 @@ export default function NodeDetail() {
                   className="h-8 text-xs"
                 />
               </div>
-              <ScrollArea className="h-64 rounded-md border bg-muted">
-                <pre className="whitespace-pre-wrap break-all p-3 text-xs">
-                  {reenrollCmd(rotated)}
-                </pre>
-              </ScrollArea>
+              <pre className="whitespace-pre-wrap break-all rounded-md border bg-muted p-3 text-xs">
+                <ShellCmd setupUrl={setupUrl} mirrorUrl={mirrorUrl} />
+              </pre>
               <Button variant="outline" size="sm" className="mt-2" onClick={copyReenrollCmd}>
                 {cmdCopied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
                 {cmdCopied ? "已复制" : "复制命令"}

@@ -14,8 +14,9 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Api, type NodeInfo, ApiError } from "@/lib/api";
+import { useSetupLink } from "@/hooks/useSetupLink";
+import { ShellCmd } from "@/components/ShellCmd";
 
 const MIRROR_PRESETS = [
   { label: "ghproxy.com", url: "https://ghproxy.com/" },
@@ -205,47 +206,22 @@ export default function NodesPage() {
         port_range_start: portRangeStart,
         port_range_end: portRangeEnd,
       });
-      setBundleUrl(null);
       setCreated(resp);
       setCreateOpen(false);
       setHostname("");
       setPortRangeStart(30000);
       setPortRangeEnd(39999);
       refreshNodes();
-      try {
-        const bundle = await Api.createInstallBundle(resp.id);
-        const base = serverInfo?.enroll_endpoint.replace(/\/api\/.*$/, "") ?? "";
-        setBundleUrl(`${base}/api/v1/setup/${bundle.token}`);
-      } catch {
-        toast.error("生成安装链接失败，请重试");
-      }
+      generateSetup(resp.id);
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : String(e));
     }
   };
 
-  const [cmdCopied, setCmdCopied] = useState(false);
-  const [mirrorUrl, setMirrorUrl] = useState("");
-  const [bundleUrl, setBundleUrl] = useState<string | null>(null);
+  const { setupUrl, mirrorUrl, setMirrorUrl, cmdCopied, generateSetup, copyCmd } =
+    useSetupLink(serverInfo?.enroll_endpoint);
   const createdNode = created ? nodes.find((n) => n.id === created.id) : null;
   const nodeOnline = createdNode ? isOnline(createdNode) : false;
-  const installCmd = (mirror = mirrorUrl): string => {
-    if (!bundleUrl) return "// 生成安装链接中…";
-    const lines = [
-      `bash <(curl -fsSL https://raw.githubusercontent.com/0xUnixIO/relay/main/install-node.sh) \\`,
-      `  --bundle ${bundleUrl}`,
-    ];
-    if (mirror.trim()) {
-      lines[lines.length - 1] += " \\";
-      lines.push(`  --mirror ${mirror.trim()}`);
-    }
-    return lines.join("\n");
-  };
-  const copyCmd = () => {
-    navigator.clipboard.writeText(installCmd());
-    setCmdCopied(true);
-    setTimeout(() => setCmdCopied(false), 2000);
-  };
 
   const q = search.trim().toLowerCase();
   const filtered = nodes.filter((n) => {
@@ -355,11 +331,9 @@ export default function NodesPage() {
                     ))}
                   </div>
                 </div>
-                <ScrollArea className="h-64 rounded-md border bg-muted">
-                  <pre className="whitespace-pre-wrap break-all p-3 text-xs">
-                    {installCmd()}
-                  </pre>
-                </ScrollArea>
+                <pre className="whitespace-pre-wrap break-all rounded-md border bg-muted p-3 text-xs">
+                  <ShellCmd setupUrl={setupUrl} mirrorUrl={mirrorUrl} />
+                </pre>
                 <Button variant="outline" size="sm" className="mt-2" onClick={copyCmd}>
                   {cmdCopied ? (
                     <Check className="mr-2 h-4 w-4" />
