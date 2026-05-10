@@ -3545,25 +3545,26 @@ async fn forward_stats_history(
     Path(id): Path<i64>,
     Query(q): Query<StatsHistoryQuery>,
 ) -> ApiResult<Json<Vec<StatsBucket>>> {
-    let (bucket, since) = match q.period.as_deref() {
-        Some("7d") => ("1 hour", "7 days"),
-        Some("24h") => ("5 minutes", "24 hours"),
-        _ => ("1 minute", "1 hour"),
+    // bucket_secs: 时间桶粒度（秒），用纯 PG 写法兼容原生 PG 和 TimescaleDB
+    let (bucket_secs, since) = match q.period.as_deref() {
+        Some("7d") => (3600_f64, "7 days"),
+        Some("24h") => (300_f64, "24 hours"),
+        _ => (60_f64, "1 hour"),
     };
 
     let rows = sqlx::query(
         "SELECT
-             time_bucket($1::interval, ts) AS ts,
-             SUM(bytes_in)::BIGINT         AS bytes_in,
-             SUM(bytes_out)::BIGINT        AS bytes_out,
-             MAX(peak_conns)::INT          AS peak_conns
+             to_timestamp(floor(extract(epoch from ts) / $1) * $1) AS ts,
+             SUM(bytes_in)::BIGINT                                  AS bytes_in,
+             SUM(bytes_out)::BIGINT                                 AS bytes_out,
+             MAX(peak_conns)::INT                                   AS peak_conns
          FROM forward_stats
          WHERE forward_id = $2
            AND ts >= now() - $3::interval
          GROUP BY 1
          ORDER BY 1",
     )
-    .bind(bucket)
+    .bind(bucket_secs)
     .bind(id)
     .bind(since)
     .fetch_all(&s.db)
