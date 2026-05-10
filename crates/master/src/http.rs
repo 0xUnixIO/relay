@@ -4250,7 +4250,6 @@ struct R2BackupConfigResp {
     account_id: String,
     bucket_name: String,
     access_key_id: String,
-    /// 始终脱敏，有值时返回 "***"，否则返回空字符串
     secret_access_key: String,
     path_prefix: String,
     schedule_hours: u32,
@@ -4280,11 +4279,7 @@ fn to_r2_resp(c: &R2BackupConfig) -> R2BackupConfigResp {
         account_id: c.account_id.clone(),
         bucket_name: c.bucket_name.clone(),
         access_key_id: c.access_key_id.clone(),
-        secret_access_key: if c.secret_access_key.is_empty() {
-            String::new()
-        } else {
-            "***".to_string()
-        },
+        secret_access_key: c.secret_access_key.clone(),
         path_prefix: c.path_prefix.clone(),
         schedule_hours: c.schedule_hours,
         keep_count: c.keep_count,

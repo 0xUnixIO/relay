@@ -588,7 +588,6 @@ export interface R2BackupConfigResp {
   account_id: string;
   bucket_name: string;
   access_key_id: string;
-  /** 始终脱敏，有值时为 "***" */
   secret_access_key: string;
   path_prefix: string;
   schedule_hours: number;

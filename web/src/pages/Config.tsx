@@ -1,7 +1,7 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
-import { Copy, Check, Eye, EyeOff, Play, RefreshCw, FolderSearch } from "lucide-react";
+import { Copy, Check, Play, RefreshCw, FolderSearch } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { Api, ApiError, type BackupJob } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -51,7 +51,6 @@ export default function ConfigPage() {
     keep_count: number;
   } | null>(null);
   const [r2Saving, setR2Saving] = useState(false);
-  const [showSecret, setShowSecret] = useState(false);
   const [triggering, setTriggering] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [backupFiles, setBackupFiles] = useState<BackupJob[] | null>(null);
@@ -136,7 +135,7 @@ export default function ConfigPage() {
     account_id: r2cfg?.account_id ?? "",
     bucket_name: r2cfg?.bucket_name ?? "",
     access_key_id: r2cfg?.access_key_id ?? "",
-    secret_access_key: "",
+    secret_access_key: r2cfg?.secret_access_key ?? "",
     path_prefix: r2cfg?.path_prefix ?? "",
     schedule_hours: r2cfg?.schedule_hours ?? 0,
     keep_count: r2cfg?.keep_count ?? 0,
@@ -155,7 +154,6 @@ export default function ConfigPage() {
       });
       await mutateR2();
       setR2Draft(null);
-      setShowSecret(false);
       toast.success("R2 备份配置已保存");
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : String(e));
@@ -442,22 +440,11 @@ export default function ConfigPage() {
             </div>
             <div className="space-y-1.5">
               <Label>Secret Access Key</Label>
-              <div className="relative">
-                <Input
-                  type={showSecret ? "text" : "password"}
-                  placeholder={r2cfg?.configured ? "留空保留原密钥" : "R2 Secret Access Key"}
-                  value={r2Fields.secret_access_key}
-                  onChange={(e) => setR2Draft({ ...r2Fields, secret_access_key: e.target.value })}
-                  className="pr-9"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowSecret((v) => !v)}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                >
-                  {showSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
+              <Input
+                placeholder="R2 Secret Access Key"
+                value={r2Fields.secret_access_key}
+                onChange={(e) => setR2Draft({ ...r2Fields, secret_access_key: e.target.value })}
+              />
             </div>
           </div>
 
