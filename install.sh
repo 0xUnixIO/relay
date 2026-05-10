@@ -617,6 +617,36 @@ else
   while true; do
     read -r -p "Web 控制台域名（留空则保持纯 HTTP :7080）: " WEB_DOMAIN
     [[ -z "$WEB_DOMAIN" ]] && break
+
+    # ── DNS 解析校验 ─────────────────────────────────────────
+    # 解析域名 A/AAAA，与本机公网 IP 比对，不一致则警告（LE 签证会失败）
+    _resolver=""
+    if command -v dig >/dev/null; then
+      _resolver="dig +short +time=3 +tries=1"
+    elif command -v getent >/dev/null; then
+      _resolver="getent ahosts"
+    fi
+    if [[ -n "$_resolver" ]]; then
+      _resolved=""
+      if [[ "$_resolver" == dig* ]]; then
+        _resolved=$($_resolver "$WEB_DOMAIN" A 2>/dev/null | grep -E '^[0-9.]+$' | head -3 | tr '\n' ' ')
+      else
+        _resolved=$($_resolver "$WEB_DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')
+      fi
+      _local_ip="${PUBLIC_ADDR%%,*}"
+      if [[ -z "$_resolved" ]]; then
+        warn "$WEB_DOMAIN 无法解析到任何 IP（DNS 未生效？）"
+        warn "Let's Encrypt 签证会失败。请先把 A/AAAA 记录指向本机：${_local_ip:-<本机公网 IP>}"
+        read -r -p "仍然继续？[y/N] " _go
+        case "${_go:-N}" in [Yy]*) ;; *) WEB_DOMAIN=""; continue ;; esac
+      elif [[ -n "$_local_ip" ]] && ! grep -qw "$_local_ip" <<<"$_resolved"; then
+        warn "$WEB_DOMAIN 解析到 [$_resolved]，与本机公网 IP [$_local_ip] 不一致"
+        warn "Let's Encrypt 签证大概率失败。建议先把 DNS A 记录改为 $_local_ip"
+        read -r -p "仍然继续？[y/N] " _go
+        case "${_go:-N}" in [Yy]*) ;; *) WEB_DOMAIN=""; continue ;; esac
+      fi
+    fi
+
     busy=""
     for p in 80 443; do
       pids=$(ss -lntpH "sport = :$p" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)
