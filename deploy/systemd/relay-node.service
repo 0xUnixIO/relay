@@ -1,6 +1,6 @@
 [Unit]
 Description=Relay forwarding agent
-Documentation=https://github.com/unix-relay/relay
+Documentation=https://github.com/0xUnixIO/relay
 After=network-online.target
 Wants=network-online.target
 

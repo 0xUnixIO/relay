@@ -1,6 +1,6 @@
 [Unit]
 Description=Relay master (control plane)
-Documentation=https://github.com/unix-relay/relay
+Documentation=https://github.com/0xUnixIO/relay
 After=network-online.target postgresql.service
 Wants=network-online.target
 
