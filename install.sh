@@ -395,7 +395,7 @@ _install_native_timescaledb() {
   echo "deb https://packagecloud.io/timescale/timescaledb/ubuntu/ ${distro} main" \
     > /etc/apt/sources.list.d/timescaledb.list
 
-  apt-get update -qq 2>/dev/null
+  apt-get update -qq 2>/dev/null || true
   apt-get install -y "timescaledb-2-postgresql-${pgver}" >/dev/null 2>&1 \
     || { warn "TimescaleDB 安装失败，relay 仍可正常运行（forward_stats 使用普通表）"; return 0; }
 
