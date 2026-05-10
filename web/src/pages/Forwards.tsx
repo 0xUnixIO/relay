@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useForwardStats } from "@/hooks/useForwardStats";
 import { useConfirm } from "@/hooks/useConfirm";
 import useSWR from "swr";
 import {
@@ -86,6 +87,8 @@ export default function ForwardsPage() {
   const [form, setForm] = useState<Form>(emptyForm());
   const [saving, setSaving] = useState(false);
   const [hostProbe, setHostProbe] = useState<ProbeState>({ status: "idle" });
+
+  const rates = useForwardStats();
 
   const [probing, setProbing] = useState<Record<string, boolean>>({});
   const [probeResult, setProbeResult] = useState<{
@@ -364,8 +367,18 @@ export default function ForwardsPage() {
                             {copied === `${f.id}-upstream` && <Check className="h-3 w-3 text-emerald-500 shrink-0" />}
                           </span>
                         </TableCell>
-                        <TableCell className="text-right font-mono text-xs whitespace-nowrap">{fmtBytes(f.in_flow_bytes)}</TableCell>
-                        <TableCell className="text-right font-mono text-xs whitespace-nowrap">{fmtBytes(f.out_flow_bytes)}</TableCell>
+                        <TableCell className="text-right font-mono text-xs whitespace-nowrap">
+                          <div>{fmtBytes(f.in_flow_bytes)}</div>
+                          {rates.get(f.id)?.inRate != null && rates.get(f.id)!.inRate > 0 && (
+                            <div className="text-emerald-500">{fmtBytes(rates.get(f.id)!.inRate)}/s</div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs whitespace-nowrap">
+                          <div>{fmtBytes(f.out_flow_bytes)}</div>
+                          {rates.get(f.id)?.outRate != null && rates.get(f.id)!.outRate > 0 && (
+                            <div className="text-sky-500">{fmtBytes(rates.get(f.id)!.outRate)}/s</div>
+                          )}
+                        </TableCell>
                         <TableCell className="text-right font-mono text-xs whitespace-nowrap">{f.active_connections}</TableCell>
                         <TableCell className="whitespace-nowrap text-right">
                           <div className="inline-flex items-center gap-1">
