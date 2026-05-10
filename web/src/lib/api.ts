@@ -35,7 +35,8 @@ export async function api<T = any>(
     } catch {}
     throw new ApiError(res.status, msg);
   }
-  if (res.status === 204) return undefined as T;
+  const ct = res.headers.get("content-type");
+  if (!ct?.includes("application/json")) return undefined as T;
   return res.json();
 }
 
