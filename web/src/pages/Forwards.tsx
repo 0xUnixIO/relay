@@ -295,7 +295,7 @@ export default function ForwardsPage() {
               <colgroup>
                 <col style={{ width: "6rem" }} />
                 <col style={{ width: "5rem" }} />
-                <col style={{ width: "5rem" }} />
+                <col style={{ width: "9rem" }} />
                 <col />
                 <col style={{ width: "5rem" }} />
                 <col style={{ width: "6rem" }} />
@@ -331,42 +331,66 @@ export default function ForwardsPage() {
                         : "!bg-gray-200 dark:!bg-gray-700/60 text-muted-foreground";
                     return (
                       <TableRow key={f.id} className={rowCls}>
-                        <TableCell className="font-medium truncate" title={f.name}>{f.name}</TableCell>
-                        <TableCell className="text-xs truncate" title={f.tunnel_name}>{f.tunnel_name}</TableCell>
-                        <TableCell
-                          className="font-mono text-xs cursor-pointer hover:text-foreground text-muted-foreground whitespace-nowrap"
-                          onClick={() => copy(
-                            `${f.id}-port`,
-                            f.entry_addrs && f.entry_addrs.length > 1
-                              ? f.entry_addrs.join("\n")
-                              : f.entry_addr ?? String(f.in_port),
-                          )}
-                          title={
-                            f.entry_addrs && f.entry_addrs.length > 1
-                              ? f.entry_addrs.join("\n")
-                              : (f.entry_addr ?? "点击复制端口")
-                          }
-                        >
-                          <span className="inline-flex items-center gap-1">
-                            {f.in_port}
-                            {f.entry_addrs && f.entry_addrs.length > 1 && (
-                              <Badge variant="secondary">×{f.entry_addrs.length}</Badge>
-                            )}
-                            {copied === `${f.id}-port` && <Check className="h-3 w-3 text-emerald-500" />}
-                          </span>
+                        <TableCell className="font-medium truncate">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="truncate block w-full">{f.name}</span>
+                            </TooltipTrigger>
+                            <TooltipContent>{f.name}</TooltipContent>
+                          </Tooltip>
                         </TableCell>
-                        <TableCell
-                          className="font-mono text-xs cursor-pointer hover:text-foreground text-muted-foreground truncate"
-                          onClick={() => copy(`${f.id}-upstream`, f.remote_addrs.join("\n"))}
-                          title={f.remote_addrs.length > 1 ? f.remote_addrs.join("\n") : f.remote_addrs[0]}
-                        >
-                          <span className="inline-flex items-center gap-1 min-w-0 max-w-full">
-                            <span className="truncate min-w-0">{f.remote_addrs.slice(0, 1).join(", ")}</span>
-                            {f.remote_addrs.length > 1 && (
-                              <Badge variant="secondary" className="shrink-0">+{f.remote_addrs.length - 1}</Badge>
-                            )}
-                            {copied === `${f.id}-upstream` && <Check className="h-3 w-3 text-emerald-500 shrink-0" />}
-                          </span>
+                        <TableCell className="text-xs truncate">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="truncate block w-full">{f.tunnel_name}</span>
+                            </TooltipTrigger>
+                            <TooltipContent>{f.tunnel_name}</TooltipContent>
+                          </Tooltip>
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-muted-foreground">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                className="inline-flex items-center gap-1 min-w-0 max-w-full cursor-pointer hover:text-foreground"
+                                onClick={() => copy(
+                                  `${f.id}-port`,
+                                  f.entry_addrs && f.entry_addrs.length > 1
+                                    ? f.entry_addrs.join("\n")
+                                    : f.entry_addr ?? String(f.in_port),
+                                )}
+                              >
+                                <span className="truncate">{f.entry_addr ?? String(f.in_port)}</span>
+                                {f.entry_addrs && f.entry_addrs.length > 1 && (
+                                  <Badge variant="secondary" className="shrink-0">×{f.entry_addrs.length}</Badge>
+                                )}
+                                {copied === `${f.id}-port` && <Check className="h-3 w-3 text-emerald-500 shrink-0" />}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {f.entry_addrs && f.entry_addrs.length > 1
+                                ? f.entry_addrs.join(" / ")
+                                : (f.entry_addr ?? String(f.in_port))}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-muted-foreground">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                className="inline-flex items-center gap-1 min-w-0 max-w-full cursor-pointer hover:text-foreground"
+                                onClick={() => copy(`${f.id}-upstream`, f.remote_addrs.join("\n"))}
+                              >
+                                <span className="truncate min-w-0">{f.remote_addrs.slice(0, 1).join(", ")}</span>
+                                {f.remote_addrs.length > 1 && (
+                                  <Badge variant="secondary" className="shrink-0">+{f.remote_addrs.length - 1}</Badge>
+                                )}
+                                {copied === `${f.id}-upstream` && <Check className="h-3 w-3 text-emerald-500 shrink-0" />}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {f.remote_addrs.join(" / ")}
+                            </TooltipContent>
+                          </Tooltip>
                         </TableCell>
                         <TableCell className="text-right font-mono text-xs whitespace-nowrap">
                           <div>{fmtBytes(f.in_flow_bytes)}</div>
@@ -383,15 +407,30 @@ export default function ForwardsPage() {
                         <TableCell className="text-right font-mono text-xs whitespace-nowrap">{f.active_connections}</TableCell>
                         <TableCell className="whitespace-nowrap text-right">
                           <div className="inline-flex items-center gap-1">
-                            <Button size="icon" variant="ghost" onClick={() => setStatsTarget(f)} title="流量趋势">
-                              <BarChart2 className="h-4 w-4" />
-                            </Button>
-                            <Button size="icon" variant="ghost" onClick={() => probe(f)} disabled={!!probing[f.id]} title="探测上游延迟">
-                              <Activity className={`h-4 w-4 ${probing[f.id] ? "animate-pulse" : ""}`} />
-                            </Button>
-                            <Button size="icon" variant="ghost" onClick={() => openEdit(f)} title="编辑">
-                              <Pencil className="h-4 w-4" />
-                            </Button>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button size="icon" variant="ghost" onClick={() => setStatsTarget(f)}>
+                                  <BarChart2 className="h-4 w-4" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>流量趋势</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button size="icon" variant="ghost" onClick={() => probe(f)} disabled={!!probing[f.id]}>
+                                  <Activity className={`h-4 w-4 ${probing[f.id] ? "animate-pulse" : ""}`} />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>探测上游延迟</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button size="icon" variant="ghost" onClick={() => openEdit(f)}>
+                                  <Pencil className="h-4 w-4" />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>编辑</TooltipContent>
+                            </Tooltip>
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <Button size="icon" variant="ghost">
