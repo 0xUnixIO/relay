@@ -8,6 +8,10 @@ license.workspace = true
 name = "relay-node"
 path = "src/main.rs"
 
+[[bin]]
+name = "relay-node-updater"
+path = "src/bin/relay_node_updater.rs"
+
 [dependencies]
 relay-proto.workspace = true
 relay-common.workspace = true
@@ -35,6 +39,10 @@ ipnet = "2.10"
 rcgen = "0.13"
 base64 = "0.22.1"
 reqwest.workspace = true
+sha2 = "0.10"
+tar = "0.4"
+hex.workspace = true
+flate2.workspace = true
 x509-parser = "0.16"
 time = "0.3"
 sysinfo = { version = "0.32", default-features = false, features = ["system"] }

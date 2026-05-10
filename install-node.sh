@@ -286,9 +286,14 @@ curl -fsSL "${GH_RAW}/$REPO/$DEPLOY_REF/deploy/systemd/${UNIT_NAME}.service" \
 
 log "installing relay-node-updater (root-level upgrade helper)"
 mkdir -p "$LIB_DIR"
-curl -fsSL "${GH_RAW}/$REPO/$DEPLOY_REF/deploy/systemd/${UNIT_NAME}-updater" \
-     -o "$LIB_DIR/${UNIT_NAME}-updater"
-chmod 0755 "$LIB_DIR/${UNIT_NAME}-updater"
+if [[ -f "$DIR/relay-node-updater" ]]; then
+  install -m 0755 "$DIR/relay-node-updater" "$LIB_DIR/relay-node-updater"
+else
+  # fallback: old release without compiled updater
+  curl -fsSL "${GH_RAW}/$REPO/$DEPLOY_REF/deploy/systemd/${UNIT_NAME}-updater" \
+       -o "$LIB_DIR/${UNIT_NAME}-updater"
+  chmod 0755 "$LIB_DIR/${UNIT_NAME}-updater"
+fi
 curl -fsSL "${GH_RAW}/$REPO/$DEPLOY_REF/deploy/systemd/${UNIT_NAME}-updater.service" \
      -o "/etc/systemd/system/${UNIT_NAME}-updater.service"
 curl -fsSL "${GH_RAW}/$REPO/$DEPLOY_REF/deploy/systemd/${UNIT_NAME}-updater.path" \
