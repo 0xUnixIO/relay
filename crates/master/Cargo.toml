@@ -8,9 +8,6 @@ license.workspace = true
 name = "relay-master"
 path = "src/main.rs"
 
-[[bin]]
-name = "relay-master-updater"
-path = "src/bin/relay_master_updater.rs"
 
 [dependencies]
 relay-proto.workspace = true

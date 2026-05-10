@@ -4273,61 +4273,158 @@ async fn upgrade_self_handler(
     Extension(claims): Extension<Claims>,
     Json(req): Json<SelfUpgradeReq>,
 ) -> ApiResult<impl IntoResponse> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
     require_admin(&claims)?;
 
-    const REQ_PATH: &str = "/var/lib/relay-master/upgrade-request.json";
-
-    let resolved =
-        s.upgrade_resolver.resolve(&req.target).await.map_err(|e| {
-            ApiError::new(StatusCode::BAD_GATEWAY, format!("无法解析目标版本：{e}"))
-        })?;
-
-    let amd64_url = resolved.master_linux_amd64_url.as_deref().ok_or_else(|| {
-        ApiError::new(StatusCode::CONFLICT, "目标 release 缺少 master/amd64 资产")
-    })?;
-    let arm64_url = resolved.master_linux_arm64_url.as_deref().ok_or_else(|| {
-        ApiError::new(StatusCode::CONFLICT, "目标 release 缺少 master/arm64 资产")
-    })?;
-    let sha_url = resolved
-        .sha256_url
-        .as_deref()
-        .ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "目标 release 缺少 SHA256SUMS 资产"))?;
-
-    let body = serde_json::json!({
-        "tag": resolved.tag,
-        "asset_url_amd64": amd64_url,
-        "asset_url_arm64": arm64_url,
-        "sha256_url": sha_url,
-    });
-
-    // O_CREAT|O_EXCL 原子写，并发请求只有一个能成功
-    use std::io::Write as _;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(REQ_PATH)
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                ApiError::new(StatusCode::CONFLICT, "已有进行中的升级，请稍候")
-            } else {
-                ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("写入升级请求失败：{e}"),
-                )
-            }
-        })?;
-    if let Err(e) = f.write_all(body.to_string().as_bytes()) {
-        let _ = std::fs::remove_file(REQ_PATH);
+    if IN_PROGRESS
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return Err(ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("写入升级请求失败：{e}"),
+            StatusCode::CONFLICT,
+            "已有进行中的升级，请稍候",
         ));
     }
+
+    let resolved = s.upgrade_resolver.resolve(&req.target).await.map_err(|e| {
+        IN_PROGRESS.store(false, Ordering::SeqCst);
+        ApiError::new(StatusCode::BAD_GATEWAY, format!("无法解析目标版本：{e}"))
+    })?;
+
+    let asset_url = match std::env::consts::ARCH {
+        "x86_64" => resolved.master_linux_amd64_url.clone(),
+        "aarch64" => resolved.master_linux_arm64_url.clone(),
+        a => {
+            IN_PROGRESS.store(false, Ordering::SeqCst);
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("不支持的架构：{a}"),
+            ));
+        }
+    }
+    .ok_or_else(|| {
+        IN_PROGRESS.store(false, Ordering::SeqCst);
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "目标 release 缺少对应架构的 master 资产",
+        )
+    })?;
+
+    let sha_url = resolved.sha256_url.clone().ok_or_else(|| {
+        IN_PROGRESS.store(false, Ordering::SeqCst);
+        ApiError::new(StatusCode::CONFLICT, "目标 release 缺少 SHA256SUMS 资产")
+    })?;
+
+    let tag = resolved.tag.clone();
+    tokio::spawn(async move {
+        match do_self_upgrade(&asset_url, &sha_url, &tag).await {
+            Ok(()) => {
+                tracing::info!(%tag, "self-upgrade: binary replaced, exiting for systemd restart");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "self-upgrade failed");
+                IN_PROGRESS.store(false, Ordering::SeqCst);
+            }
+        }
+    });
 
     Ok((
         StatusCode::ACCEPTED,
         Json(SelfUpgradeResp { tag: resolved.tag }),
     ))
+}
+
+async fn do_self_upgrade(asset_url: &str, sha_url: &str, tag: &str) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use flate2::read::GzDecoder;
+    use sha2::{Digest, Sha256};
+    use std::io::Read as _;
+    use std::time::Duration;
+
+    const DEST: &str = "/var/lib/relay-master/relay-master";
+
+    let basename = asset_url
+        .rsplit('/')
+        .next()
+        .with_context(|| format!("bad asset URL: {asset_url}"))?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .user_agent(concat!("relay-master/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+
+    tracing::info!(%asset_url, "self-upgrade: downloading tarball");
+    let tar_data = client
+        .get(asset_url)
+        .send()
+        .await
+        .context("download tarball")?
+        .error_for_status()
+        .context("tarball response")?
+        .bytes()
+        .await
+        .context("read tarball bytes")?;
+
+    tracing::info!(%sha_url, "self-upgrade: downloading SHA256SUMS");
+    let sums_data = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()?
+        .get(sha_url)
+        .send()
+        .await
+        .context("download SHA256SUMS")?
+        .error_for_status()
+        .context("SHA256SUMS response")?
+        .bytes()
+        .await
+        .context("read SHA256SUMS bytes")?;
+
+    let sums_str = std::str::from_utf8(&sums_data).context("SHA256SUMS not UTF-8")?;
+    let expected = sums_str
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let (hash, fname) = l.split_once("  ").or_else(|| l.split_once(' '))?;
+            (fname.trim() == basename).then(|| hash.trim().to_string())
+        })
+        .next()
+        .with_context(|| format!("{basename} not found in SHA256SUMS"))?;
+    let actual = hex::encode(Sha256::digest(&tar_data));
+    anyhow::ensure!(
+        actual == expected,
+        "checksum mismatch: expected {expected}, got {actual}"
+    );
+
+    tracing::info!(%tag, "self-upgrade: extracting relay-master from archive");
+    let mut archive = tar::Archive::new(GzDecoder::new(tar_data.as_ref()));
+    let mut bin_data: Option<Vec<u8>> = None;
+    for entry in archive.entries().context("read tar entries")? {
+        let mut entry = entry.context("tar entry")?;
+        let path = entry.path().context("entry path")?;
+        if path.file_name().and_then(|f| f.to_str()) == Some("relay-master") {
+            let mut buf = Vec::new();
+            entry
+                .read_to_end(&mut buf)
+                .context("read binary from tar")?;
+            bin_data = Some(buf);
+            break;
+        }
+    }
+    let bin_data = bin_data.context("relay-master not found in archive")?;
+
+    let tmp = format!("{DEST}.new");
+    std::fs::write(&tmp, &bin_data).with_context(|| format!("write {tmp}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("chmod {tmp}"))?;
+    }
+    std::fs::rename(&tmp, DEST).with_context(|| format!("rename {tmp} -> {DEST}"))?;
+    Ok(())
 }
 
 #[derive(Serialize)]

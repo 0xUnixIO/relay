@@ -89,9 +89,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} --bin relay-master --bin relay-master-updater --bin relay-node --bin relay-node-updater
+            cross build --release --target ${{ matrix.target }} --bin relay-master --bin relay-node
           else
-            cargo build --release --target ${{ matrix.target }} --bin relay-master --bin relay-master-updater --bin relay-node --bin relay-node-updater
+            cargo build --release --target ${{ matrix.target }} --bin relay-master --bin relay-node
           fi
 
       - name: Package archive
@@ -102,18 +102,14 @@ jobs:
           TARGET="${{ matrix.target }}"
           mkdir -p dist
 
-          # relay-node + relay-node-updater
           NODE="relay-node-${TAG}-${TARGET}"
           mkdir -p "dist/${NODE}"
-          cp "target/${TARGET}/release/relay-node"         "dist/${NODE}/"
-          cp "target/${TARGET}/release/relay-node-updater" "dist/${NODE}/"
+          cp "target/${TARGET}/release/relay-node" "dist/${NODE}/"
           tar -czf "dist/${NODE}.tar.gz" -C dist "${NODE}"
 
-          # relay-master + relay-master-updater
           MASTER="relay-master-${TAG}-${TARGET}"
           mkdir -p "dist/${MASTER}"
-          cp "target/${TARGET}/release/relay-master"         "dist/${MASTER}/"
-          cp "target/${TARGET}/release/relay-master-updater" "dist/${MASTER}/"
+          cp "target/${TARGET}/release/relay-master" "dist/${MASTER}/"
           cp README.md ROADMAP.md "dist/${MASTER}/" 2>/dev/null || true
           tar -czf "dist/${MASTER}.tar.gz" -C dist "${MASTER}"
 

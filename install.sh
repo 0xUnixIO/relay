@@ -153,7 +153,7 @@ BIN_NAME="relay-master"
 UNIT_NAME="relay-master"
 ETC_DIR="/etc/relay-master"
 ENV_FILE="$ETC_DIR/relay-master.env"
-LIB_DIR="/usr/local/lib/relay-master"
+DATA_DIR="/var/lib/relay-master"
 BIN_LINK="/usr/local/bin/relay-master"
 COMPOSE_FILE="$ETC_DIR/docker-compose.postgres.yml"
 COMPOSE_ENV_FILE="$ETC_DIR/postgres.env"
@@ -196,7 +196,7 @@ fi
 if [[ "$UNINSTALL" -eq 1 ]]; then
   log "stopping $UNIT_NAME"
   systemctl disable --now "$UNIT_NAME" 2>/dev/null || true
-  rm -f "/etc/systemd/system/${UNIT_NAME}.service" "/usr/local/bin/${BIN_NAME}"
+  rm -f "/etc/systemd/system/${UNIT_NAME}.service" "$BIN_LINK"
   systemctl daemon-reload
   log "removed binary + systemd unit"
 
@@ -315,17 +315,20 @@ if systemctl is-active --quiet "$UNIT_NAME" 2>/dev/null; then
   RESTART=1
 fi
 
-log "installing $LIB_DIR/$BIN_NAME"
-mkdir -p "$LIB_DIR"
-install -m 0755 "$DIR/$BIN_NAME" "$LIB_DIR/$BIN_NAME.new"
-mv -f "$LIB_DIR/$BIN_NAME.new" "$LIB_DIR/$BIN_NAME"
-ln -sfn "$LIB_DIR/$BIN_NAME" "${BIN_LINK}.new"
-mv -Tf "${BIN_LINK}.new" "$BIN_LINK"
-
 if ! id relay >/dev/null 2>&1; then
   log "creating system user 'relay'"
   useradd --system --no-create-home --shell /usr/sbin/nologin relay
 fi
+
+log "installing $DATA_DIR/$BIN_NAME"
+mkdir -p "$DATA_DIR"
+chown relay:relay "$DATA_DIR"
+chmod 0700 "$DATA_DIR"
+install -m 0755 "$DIR/$BIN_NAME" "$DATA_DIR/$BIN_NAME.new"
+chown relay:relay "$DATA_DIR/$BIN_NAME.new"
+mv -f "$DATA_DIR/$BIN_NAME.new" "$DATA_DIR/$BIN_NAME"
+ln -sfn "$DATA_DIR/$BIN_NAME" "${BIN_LINK}.new"
+mv -Tf "${BIN_LINK}.new" "$BIN_LINK"
 
 # ── TimescaleDB 无感迁移（仅在 update 且使用内置 Docker Postgres 时触发）────────
 # pg16 数据目录格式与 timescale/timescaledb:latest-pg16 完全兼容，直接换镜像即可。
@@ -855,23 +858,7 @@ log "installing systemd unit"
 curl -fsSL "https://raw.githubusercontent.com/$REPO/main/deploy/systemd/${UNIT_NAME}.service" \
      -o "/etc/systemd/system/${UNIT_NAME}.service"
 
-log "installing relay-master-updater (root-level upgrade helper)"
-mkdir -p "$LIB_DIR"
-if [[ -f "$DIR/relay-master-updater" ]]; then
-  install -m 0755 "$DIR/relay-master-updater" "$LIB_DIR/relay-master-updater"
-else
-  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/deploy/systemd/relay-master-updater" \
-       -o "$LIB_DIR/relay-master-updater" 2>/dev/null || true
-  [[ -f "$LIB_DIR/relay-master-updater" ]] && chmod 0755 "$LIB_DIR/relay-master-updater"
-fi
-for unit in relay-master-updater.service relay-master-updater.path; do
-  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/deploy/systemd/$unit" \
-       -o "/etc/systemd/system/$unit"
-done
-
 systemctl daemon-reload
-systemctl enable --now relay-master-updater.path 2>/dev/null || true
-
 setup_caddy() {
   local domain="$1"
   log "setting up Caddy reverse proxy for https://$domain → 127.0.0.1:7080"

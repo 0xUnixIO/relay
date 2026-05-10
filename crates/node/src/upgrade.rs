@@ -1,31 +1,17 @@
 //! Node-side upgrade command handler.
 //!
 //! Receives `Command{kind=UPGRADE_AGENT}` from master, validates the args,
-//! atomically writes a request file the root-level `relay-node-updater`
-//! systemd path unit watches, and acks back via `UpgradeReport`.
+//! then downloads the new binary in the background, atomically replaces the
+//! current binary, and calls process::exit(0) so systemd restarts the service.
 
 use relay_proto::v1::{node_message::Payload as NodePayload, Command, NodeMessage, UpgradeReport};
-use serde::Serialize;
 use std::sync::OnceLock;
 use tokio::sync::{mpsc, Mutex};
 
-const REQUEST_PATH: &str = "/var/lib/relay-node/upgrade-request.json";
-
-/// Serialize concurrent UPGRADE_AGENT commands so two in-flight jobs can't
-/// race writing the same request file. Master also has a partial unique
-/// index, but defense-in-depth.
+/// Serialize concurrent UPGRADE_AGENT commands — only one upgrade runs at a time.
 fn upgrade_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
-}
-
-#[derive(Serialize)]
-struct UpgradeRequestFile<'a> {
-    job_id: i64,
-    tag: &'a str,
-    asset_url_amd64: &'a str,
-    asset_url_arm64: &'a str,
-    sha256_url: &'a str,
 }
 
 pub async fn handle_upgrade_command(cmd: Command, tx: mpsc::Sender<NodeMessage>) {
@@ -49,47 +35,129 @@ pub async fn handle_upgrade_command(cmd: Command, tx: mpsc::Sender<NodeMessage>)
         return;
     }
 
-    // Hold the per-process lock for the entire write so a second concurrent
-    // command can't interleave temp-file rename with this one.
-    let _guard = upgrade_lock().lock().await;
-
-    // If the updater hasn't picked up a previous request yet, refuse.
-    if std::path::Path::new(REQUEST_PATH).exists() {
-        tracing::warn!("upgrade: refused, previous request not yet consumed");
-        send_report(
-            &tx,
-            job_id,
-            "failed",
-            "previous upgrade request still pending on this node",
-        )
-        .await;
+    let _guard = upgrade_lock().try_lock();
+    if _guard.is_err() {
+        let reason = "another upgrade is already in progress";
+        tracing::warn!("upgrade: refused, {reason}");
+        send_report(&tx, job_id, "failed", reason).await;
         return;
     }
 
-    let body = UpgradeRequestFile {
-        job_id,
-        tag: &tag,
-        asset_url_amd64: &amd64_url,
-        asset_url_arm64: &arm64_url,
-        sha256_url: &sha256_url,
-    };
-    let json = match serde_json::to_string_pretty(&body) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(error = %e, "upgrade: serialize failed");
-            send_report(&tx, job_id, "failed", &format!("serialize: {e}")).await;
+    let asset_url = match std::env::consts::ARCH {
+        "x86_64" => amd64_url,
+        "aarch64" => arm64_url,
+        a => {
+            let reason = format!("unsupported arch: {a}");
+            send_report(&tx, job_id, "failed", &reason).await;
             return;
         }
     };
 
-    if let Err(e) = atomic_write(job_id, &json) {
-        tracing::error!(error = %e, "upgrade: write request file failed");
-        send_report(&tx, job_id, "failed", &format!("write: {e}")).await;
-        return;
-    }
-
-    tracing::info!(job_id, %tag, "upgrade: request written; updater will pick it up");
+    tracing::info!(job_id, %tag, "upgrade: accepted, downloading in background");
     send_report(&tx, job_id, "accepted", "").await;
+
+    // 后台执行：下载 → 验证 → 原子替换 → exit(0)
+    tokio::spawn(async move {
+        match do_node_upgrade(&asset_url, &sha256_url, &tag).await {
+            Ok(()) => {
+                tracing::info!(job_id, %tag, "upgrade: binary replaced, exiting for systemd restart");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                tracing::error!(job_id, error = %e, "upgrade failed");
+            }
+        }
+    });
+}
+
+async fn do_node_upgrade(asset_url: &str, sha_url: &str, tag: &str) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use flate2::read::GzDecoder;
+    use sha2::{Digest, Sha256};
+    use std::io::Read as _;
+    use std::time::Duration;
+
+    const DEST: &str = "/var/lib/relay-node/relay-node";
+
+    let basename = asset_url
+        .rsplit('/')
+        .next()
+        .with_context(|| format!("bad asset URL: {asset_url}"))?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .user_agent(concat!("relay-node/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+
+    tracing::info!(%asset_url, "upgrade: downloading tarball");
+    let tar_data = client
+        .get(asset_url)
+        .send()
+        .await
+        .context("download tarball")?
+        .error_for_status()
+        .context("tarball response")?
+        .bytes()
+        .await
+        .context("read tarball bytes")?;
+
+    tracing::info!(%sha_url, "upgrade: downloading SHA256SUMS");
+    let sums_data = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()?
+        .get(sha_url)
+        .send()
+        .await
+        .context("download SHA256SUMS")?
+        .error_for_status()
+        .context("SHA256SUMS response")?
+        .bytes()
+        .await
+        .context("read SHA256SUMS bytes")?;
+
+    let sums_str = std::str::from_utf8(&sums_data).context("SHA256SUMS not UTF-8")?;
+    let expected = sums_str
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let (hash, fname) = l.split_once("  ").or_else(|| l.split_once(' '))?;
+            (fname.trim() == basename).then(|| hash.trim().to_string())
+        })
+        .next()
+        .with_context(|| format!("{basename} not found in SHA256SUMS"))?;
+    let actual = hex::encode(Sha256::digest(&tar_data));
+    anyhow::ensure!(
+        actual == expected,
+        "checksum mismatch: expected {expected}, got {actual}"
+    );
+
+    tracing::info!(%tag, "upgrade: extracting relay-node from archive");
+    let mut archive = tar::Archive::new(GzDecoder::new(tar_data.as_ref()));
+    let mut bin_data: Option<Vec<u8>> = None;
+    for entry in archive.entries().context("read tar entries")? {
+        let mut entry = entry.context("tar entry")?;
+        let path = entry.path().context("entry path")?;
+        if path.file_name().and_then(|f| f.to_str()) == Some("relay-node") {
+            let mut buf = Vec::new();
+            entry
+                .read_to_end(&mut buf)
+                .context("read binary from tar")?;
+            bin_data = Some(buf);
+            break;
+        }
+    }
+    let bin_data = bin_data.context("relay-node not found in archive")?;
+
+    let tmp = format!("{DEST}.new");
+    std::fs::write(&tmp, &bin_data).with_context(|| format!("write {tmp}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("chmod {tmp}"))?;
+    }
+    std::fs::rename(&tmp, DEST).with_context(|| format!("rename {tmp} -> {DEST}"))?;
+    Ok(())
 }
 
 fn validate(tag: &str, amd64_url: &str, arm64_url: &str, sha256_url: &str) -> Result<(), String> {
@@ -138,23 +206,6 @@ fn valid_gh_url(url: &str) -> bool {
         || url.starts_with("https://objects.githubusercontent.com/")
 }
 
-fn atomic_write(job_id: i64, json: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    if let Some(parent) = std::path::Path::new(REQUEST_PATH).parent() {
-        // Best-effort: parent should already exist (StateDirectory).
-        let _ = std::fs::create_dir_all(parent);
-    }
-    // Per-job tmp filename so two concurrent writers (defense in depth — the
-    // upgrade_lock should already serialize them) can't trample each other.
-    let tmp = format!("{REQUEST_PATH}.tmp.{job_id}");
-    let mut f = std::fs::File::create(&tmp)?;
-    f.write_all(json.as_bytes())?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, REQUEST_PATH)?;
-    Ok(())
-}
-
 async fn send_report(tx: &mpsc::Sender<NodeMessage>, job_id: i64, state: &str, error: &str) {
     let msg = NodeMessage {
         payload: Some(NodePayload::UpgradeReport(UpgradeReport {
@@ -182,6 +233,7 @@ mod tests {
         )
         .is_err());
     }
+
     #[test]
     fn accepts_gh_urls() {
         assert!(validate(
@@ -199,6 +251,7 @@ mod tests {
         )
         .is_ok());
     }
+
     #[test]
     fn rejects_bad_tag() {
         assert!(!valid_tag("0.2.0"));

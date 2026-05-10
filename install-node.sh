@@ -78,7 +78,7 @@ BIN_NAME="relay-node"
 UNIT_NAME="relay-node"
 ETC_DIR="/etc/relay-node"
 ENV_FILE="$ETC_DIR/relay-node.env"
-LIB_DIR="/usr/local/lib/relay-node"
+DATA_DIR="/var/lib/relay-node"
 BIN_LINK="/usr/local/bin/$BIN_NAME"
 
 [[ $EUID -eq 0 ]] || {
@@ -101,13 +101,8 @@ case "$0" in /tmp/relay-install-node.*.sh) trap 'rm -f "$0"' EXIT ;; esac
 if [[ "$UNINSTALL" -eq 1 ]]; then
   log "stopping $UNIT_NAME"
   systemctl disable --now "$UNIT_NAME" 2>/dev/null || true
-  systemctl disable --now "${UNIT_NAME}-updater.path" 2>/dev/null || true
-  systemctl disable --now "${UNIT_NAME}-updater.service" 2>/dev/null || true
   rm -f "/etc/systemd/system/${UNIT_NAME}.service"
-  rm -f "/etc/systemd/system/${UNIT_NAME}-updater.service"
-  rm -f "/etc/systemd/system/${UNIT_NAME}-updater.path"
   rm -f "$BIN_LINK"
-  rm -rf "$LIB_DIR"
   systemctl daemon-reload
   log "removed binary + systemd units"
 
@@ -218,19 +213,20 @@ if systemctl is-active --quiet "$UNIT_NAME" 2>/dev/null; then
   RESTART=1
 fi
 
-log "installing $LIB_DIR/$BIN_NAME"
-mkdir -p "$LIB_DIR"
-install -m 0755 "$DIR/$BIN_NAME" "$LIB_DIR/$BIN_NAME.new"
-mv -f "$LIB_DIR/$BIN_NAME.new" "$LIB_DIR/$BIN_NAME"
-
-# 原子替换 PATH 下的软链接
-ln -sfn "$LIB_DIR/$BIN_NAME" "${BIN_LINK}.new"
-mv -Tf "${BIN_LINK}.new" "$BIN_LINK"
-
 if ! id relay >/dev/null 2>&1; then
   log "creating system user 'relay'"
   useradd --system --no-create-home --shell /usr/sbin/nologin relay
 fi
+
+log "installing $DATA_DIR/$BIN_NAME"
+mkdir -p "$DATA_DIR"
+chown relay:relay "$DATA_DIR"
+chmod 0700 "$DATA_DIR"
+install -m 0755 "$DIR/$BIN_NAME" "$DATA_DIR/$BIN_NAME.new"
+chown relay:relay "$DATA_DIR/$BIN_NAME.new"
+mv -f "$DATA_DIR/$BIN_NAME.new" "$DATA_DIR/$BIN_NAME"
+ln -sfn "$DATA_DIR/$BIN_NAME" "${BIN_LINK}.new"
+mv -Tf "${BIN_LINK}.new" "$BIN_LINK"
 
 mkdir -p "$ETC_DIR"
 
@@ -284,25 +280,7 @@ log "installing systemd unit"
 curl -fsSL "${GH_RAW}/$REPO/$DEPLOY_REF/deploy/systemd/${UNIT_NAME}.service" \
      -o "/etc/systemd/system/${UNIT_NAME}.service"
 
-log "installing relay-node-updater (root-level upgrade helper)"
-mkdir -p "$LIB_DIR"
-if [[ -f "$DIR/relay-node-updater" ]]; then
-  install -m 0755 "$DIR/relay-node-updater" "$LIB_DIR/relay-node-updater"
-else
-  # fallback: old release without compiled updater
-  curl -fsSL "${GH_RAW}/$REPO/$DEPLOY_REF/deploy/systemd/${UNIT_NAME}-updater" \
-       -o "$LIB_DIR/${UNIT_NAME}-updater"
-  chmod 0755 "$LIB_DIR/${UNIT_NAME}-updater"
-fi
-curl -fsSL "${GH_RAW}/$REPO/$DEPLOY_REF/deploy/systemd/${UNIT_NAME}-updater.service" \
-     -o "/etc/systemd/system/${UNIT_NAME}-updater.service"
-curl -fsSL "${GH_RAW}/$REPO/$DEPLOY_REF/deploy/systemd/${UNIT_NAME}-updater.path" \
-     -o "/etc/systemd/system/${UNIT_NAME}-updater.path"
-
 systemctl daemon-reload
-
-log "enabling relay-node-updater path watcher"
-systemctl enable --now "${UNIT_NAME}-updater.path" 2>/dev/null || true
 
 if [[ "$START" -eq 1 ]]; then
   log "enabling + starting $UNIT_NAME"

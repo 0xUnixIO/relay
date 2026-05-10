@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/relay-node/relay-node.env
-ExecStart=/usr/local/bin/relay-node
+ExecStart=/var/lib/relay-node/relay-node
 Restart=always
 RestartSec=3s
 
