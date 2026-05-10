@@ -4,8 +4,9 @@ use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use redis::aio::ConnectionManager;
+use serde::Serialize;
 use sqlx::PgPool;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{broadcast, Mutex, Notify, RwLock};
 
 use crate::config::Config;
 use crate::models::Node;
@@ -22,6 +23,16 @@ pub struct SetupEntry {
     pub enroll_endpoint: String,
     pub ca_cert_b64: String,
     pub created_at: Instant,
+}
+
+/// 节点实时流量事件，通过 broadcast channel 推送给 SSE 订阅者。
+#[derive(Debug, Clone, Serialize)]
+pub struct ForwardStatEvent {
+    pub forward_id: String,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+    pub active_connections: u32,
+    pub ts_unix_ms: i64,
 }
 
 /// 节点心跳运行时（in-process L1 cache，单 master 真相源）。
@@ -58,10 +69,13 @@ pub struct AppState {
     pub backup_trigger: Arc<Notify>,
     /// setup token → 安装参数，有效期 24h。
     pub setup_tokens: Arc<RwLock<HashMap<String, SetupEntry>>>,
+    /// 节点上报的转发流量事件广播，SSE 端点订阅此 channel 实时推送。
+    pub stats_tx: broadcast::Sender<ForwardStatEvent>,
 }
 
 impl AppState {
     pub fn new(cfg: Config, db: PgPool, pki: Arc<Pki>, redis: Option<ConnectionManager>) -> Self {
+        let (stats_tx, _) = broadcast::channel(512);
         Self {
             cfg: Arc::new(cfg),
             db,
@@ -75,6 +89,7 @@ impl AppState {
             upgrade_resolver: UpgradeResolver::new(crate::upgrade::DEFAULT_REPO),
             backup_trigger: Arc::new(Notify::new()),
             setup_tokens: Arc::new(RwLock::new(HashMap::new())),
+            stats_tx,
         }
     }
 

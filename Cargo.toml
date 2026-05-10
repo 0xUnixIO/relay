@@ -17,7 +17,7 @@ repository = "https://github.com/0xUnixIO/relay"
 [workspace.dependencies]
 # async runtime
 tokio = { version = "1.40", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["net"] }
+tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tokio-util = { version = "0.7", features = ["full"] }
 futures = "0.3"
 async-trait = "0.1"

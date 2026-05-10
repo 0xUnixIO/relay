@@ -144,7 +144,8 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
             post(batch_redeploy_forwards),
         )
         .route("/api/v1/auth/me", get(get_me))
-        .route("/api/v1/auth/me/password", post(change_own_password));
+        .route("/api/v1/auth/me/password", post(change_own_password))
+        .route("/api/v1/events/forwards", get(forward_stats_stream));
 
     let protected = admin
         .merge(user)
@@ -208,13 +209,21 @@ async fn require_auth(
     mut req: axum::http::Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let token = req
+    // 优先取 Authorization header，SSE 场景下 fallback 到 ?token= query param
+    let token: String = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_owned)
+        .or_else(|| {
+            req.uri().query().and_then(|q| {
+                q.split('&')
+                    .find_map(|p| p.strip_prefix("token=").map(str::to_owned))
+            })
+        })
         .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "缺少 bearer 令牌"))?;
-    let claims = auth::verify_jwt(&s.cfg.jwt_secret, token)
+    let claims = auth::verify_jwt(&s.cfg.jwt_secret, &token)
         .map_err(|_| ApiError::new(StatusCode::UNAUTHORIZED, "令牌无效"))?;
     req.extensions_mut().insert(claims);
     Ok(next.run(req).await)
@@ -3479,6 +3488,24 @@ async fn public_status(State(s): State<AppState>) -> ApiResult<Json<PublicStatus
         .await
         .map(Json)
         .map_err(ApiError::from)
+}
+
+async fn forward_stats_stream(
+    State(s): State<AppState>,
+) -> Sse<impl futures_core::Stream<Item = Result<Event, Infallible>>> {
+    use tokio_stream::wrappers::BroadcastStream;
+
+    let rx = s.stats_tx.subscribe();
+    let stream = BroadcastStream::new(rx).map(|res: Result<crate::state::ForwardStatEvent, _>| {
+        Ok::<_, Infallible>(
+            match res.ok().and_then(|e| serde_json::to_string(&e).ok()) {
+                Some(j) => Event::default().data(j),
+                None => Event::default().comment("lag"),
+            },
+        )
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
 async fn public_status_stream(

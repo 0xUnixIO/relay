@@ -246,6 +246,7 @@ async fn handle_inbound(
     let series = state.series.clone();
     let counter_deltas = state.counter_deltas.clone();
     let registry = state.registry.clone();
+    let stats_tx = state.stats_tx.clone();
 
     // 连接建立时一次性加载，5s 的陈旧度可接受
     let node_traffic_ratio: f64 =
@@ -403,13 +404,14 @@ async fn handle_inbound(
                 }
             }
             NodePayload::Stats(st) => {
+                let now_ms = Utc::now().timestamp_millis();
                 let stats_key = format!("{}:{}", st.forward_id, st.hop_index);
                 series
                     .push_tunnel(
                         &node_id,
                         &stats_key,
                         crate::series::TunnelSample {
-                            ts_unix_ms: Utc::now().timestamp_millis(),
+                            ts_unix_ms: now_ms,
                             bytes_in: st.bytes_in,
                             bytes_out: st.bytes_out,
                             active_connections: st.active_connections,
@@ -417,6 +419,13 @@ async fn handle_inbound(
                         },
                     )
                     .await;
+                let _ = stats_tx.send(crate::state::ForwardStatEvent {
+                    forward_id: st.forward_id.clone(),
+                    bytes_in: st.bytes_in,
+                    bytes_out: st.bytes_out,
+                    active_connections: st.active_connections,
+                    ts_unix_ms: now_ms,
+                });
                 // Each hop accumulates its own bytes weighted by the node's
                 // traffic_ratio, so multi-hop billing sums A*ratio_A + B*ratio_B.
                 if let Ok(forward_id) = st.forward_id.parse::<i64>() {
