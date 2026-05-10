@@ -385,18 +385,56 @@ _install_native_timescaledb() {
 
   log "为原生 PostgreSQL ${pgver} 安装 TimescaleDB 扩展..."
 
-  # 添加 TimescaleDB apt 源
+  # 添加 TimescaleDB apt 源（Debian 和 Ubuntu 使用不同 repo 路径）
   curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey \
     | gpg --yes --dearmor -o /etc/apt/trusted.gpg.d/timescaledb.gpg 2>/dev/null \
     || { warn "无法获取 TimescaleDB GPG key，跳过"; return 0; }
 
-  local distro
-  distro=$(lsb_release -c -s 2>/dev/null || echo "focal")
-  echo "deb https://packagecloud.io/timescale/timescaledb/ubuntu/ ${distro} main" \
-    > /etc/apt/sources.list.d/timescaledb.list
+  local os_id distro
+  os_id=$(sed -n 's/^ID=//p' /etc/os-release 2>/dev/null | tr -d '"')
+  distro=$(sed -n 's/^VERSION_CODENAME=//p' /etc/os-release 2>/dev/null | tr -d '"')
+  [[ -z "$distro" ]] && distro=$(lsb_release -c -s 2>/dev/null || echo "")
 
+  local repo_os fallback_distro
+  case "$os_id" in
+    debian)
+      repo_os="debian"
+      fallback_distro="bookworm"
+      [[ -z "$distro" ]] && distro="bookworm"
+      ;;
+    *)
+      repo_os="ubuntu"
+      fallback_distro="jammy"
+      [[ -z "$distro" ]] && distro="jammy"
+      ;;
+  esac
+
+  echo "deb https://packagecloud.io/timescale/timescaledb/${repo_os}/ ${distro} main" \
+    > /etc/apt/sources.list.d/timescaledb.list
   apt-get update -qq 2>/dev/null || true
-  apt-get install -y "timescaledb-2-postgresql-${pgver}" >/dev/null 2>&1 \
+
+  # 若当前发行版代号无对应包（如 noble/trixie），降级到最近稳定版重试
+  if ! apt-cache show "timescaledb-2-postgresql-${pgver}" >/dev/null 2>&1; then
+    if [[ "$distro" == "$fallback_distro" ]]; then
+      warn "timescaledb-2-postgresql-${pgver} 在 ${os_id} ${distro} 上不可用，跳过"
+      warn "可手动安装: https://docs.timescale.com/self-hosted/latest/install/"
+      warn "relay 仍可正常运行（forward_stats 使用普通表）"
+      return 0
+    fi
+    log "TimescaleDB 暂无 ${os_id}/${distro} 包，降级使用 ${fallback_distro} 兼容包..."
+    echo "deb https://packagecloud.io/timescale/timescaledb/${repo_os}/ ${fallback_distro} main" \
+      > /etc/apt/sources.list.d/timescaledb.list
+    apt-get update -qq 2>/dev/null || true
+    if ! apt-cache show "timescaledb-2-postgresql-${pgver}" >/dev/null 2>&1; then
+      warn "timescaledb-2-postgresql-${pgver} 在 ${os_id}/${fallback_distro} 仍不可用，跳过"
+      warn "可手动安装: https://docs.timescale.com/self-hosted/latest/install/"
+      warn "relay 仍可正常运行（forward_stats 使用普通表）"
+      return 0
+    fi
+  fi
+
+  # 保留 stderr 方便诊断依赖冲突等问题
+  apt-get install -y "timescaledb-2-postgresql-${pgver}" >/dev/null \
     || { warn "TimescaleDB 安装失败，relay 仍可正常运行（forward_stats 使用普通表）"; return 0; }
 
   # 将 timescaledb 加入 shared_preload_libraries 并重启 PG
