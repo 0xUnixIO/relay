@@ -205,12 +205,20 @@ export default function NodesPage() {
         port_range_start: portRangeStart,
         port_range_end: portRangeEnd,
       });
+      setBundleUrl(null);
       setCreated(resp);
       setCreateOpen(false);
       setHostname("");
       setPortRangeStart(30000);
       setPortRangeEnd(39999);
       refreshNodes();
+      try {
+        const bundle = await Api.createInstallBundle(resp.id);
+        const base = serverInfo?.enroll_endpoint.replace(/\/api\/.*$/, "") ?? "";
+        setBundleUrl(`${base}/api/v1/setup/${bundle.token}`);
+      } catch {
+        toast.error("生成安装链接失败，请重试");
+      }
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : String(e));
     }
@@ -218,17 +226,14 @@ export default function NodesPage() {
 
   const [cmdCopied, setCmdCopied] = useState(false);
   const [mirrorUrl, setMirrorUrl] = useState("");
+  const [bundleUrl, setBundleUrl] = useState<string | null>(null);
   const createdNode = created ? nodes.find((n) => n.id === created.id) : null;
   const nodeOnline = createdNode ? isOnline(createdNode) : false;
-  const installCmd = (c: { id: string; enrollment_token: string }, mirror = mirrorUrl): string => {
-    if (!serverInfo) return "// fetching server info…";
+  const installCmd = (mirror = mirrorUrl): string => {
+    if (!bundleUrl) return "// 生成安装链接中…";
     const lines = [
       `bash <(curl -fsSL https://raw.githubusercontent.com/0xUnixIO/relay/main/install-node.sh) \\`,
-      `  --master ${serverInfo.master_endpoint} \\`,
-      `  --master-enroll-endpoint ${serverInfo.enroll_endpoint} \\`,
-      `  --node-id ${c.id} \\`,
-      `  --token ${c.enrollment_token} \\`,
-      `  --ca-cert ${serverInfo.ca_cert_b64}`,
+      `  --bundle ${bundleUrl}`,
     ];
     if (mirror.trim()) {
       lines[lines.length - 1] += " \\";
@@ -237,8 +242,7 @@ export default function NodesPage() {
     return lines.join("\n");
   };
   const copyCmd = () => {
-    if (!created) return;
-    navigator.clipboard.writeText(installCmd(created));
+    navigator.clipboard.writeText(installCmd());
     setCmdCopied(true);
     setTimeout(() => setCmdCopied(false), 2000);
   };
@@ -353,7 +357,7 @@ export default function NodesPage() {
                 </div>
                 <ScrollArea className="h-64 rounded-md border bg-muted">
                   <pre className="whitespace-pre-wrap break-all p-3 text-xs">
-                    {installCmd(created)}
+                    {installCmd()}
                   </pre>
                 </ScrollArea>
                 <Button variant="outline" size="sm" className="mt-2" onClick={copyCmd}>

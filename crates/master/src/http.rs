@@ -103,6 +103,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
             "/api/v1/system/upgrade_channel",
             get(get_upgrade_channel).put(put_upgrade_channel),
         )
+        .route("/api/v1/nodes/:id/setup", post(create_install_bundle))
         .route("/api/v1/nodes/:id/upgrade", post(create_node_upgrade))
         .route(
             "/api/v1/nodes/:id/upgrade/jobs",
@@ -157,6 +158,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .route("/api/v1/auth/bootstrap", post(bootstrap_admin))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/enroll", post(crate::enroll::enroll_handler))
+        .route("/api/v1/setup/:token", get(get_install_bundle))
         .route("/api/v1/system/branding", get(get_branding))
         .route("/scripts/:name", get(proxy_script));
 
@@ -1108,6 +1110,84 @@ async fn server_info(State(s): State<AppState>) -> ApiResult<Json<ServerInfo>> {
 
 fn port_of(addr: &str) -> Option<u16> {
     addr.rsplit_once(':')?.1.parse().ok()
+}
+
+async fn create_install_bundle(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    use base64::Engine;
+    let row: Option<(String,)> = sqlx::query_as("SELECT enrollment_token FROM nodes WHERE id = $1")
+        .bind(&id)
+        .fetch_optional(&s.db)
+        .await?;
+    let (enrollment_token,) =
+        row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "资源不存在"))?;
+
+    let public_host = s
+        .cfg
+        .public_addrs
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "localhost".into());
+    let grpc_port = port_of(&s.cfg.grpc_addr).unwrap_or(7443);
+    let http_port = port_of(&s.cfg.http_addr).unwrap_or(7080);
+    let enroll_endpoint = s
+        .cfg
+        .enroll_public_url
+        .clone()
+        .unwrap_or_else(|| format!("http://{public_host}:{http_port}/api/v1/enroll"));
+    let ca_b64 = base64::engine::general_purpose::STANDARD.encode(s.pki.ca_cert_pem.as_bytes());
+
+    let token = {
+        use rand::RngCore;
+        let mut buf = [0u8; 8];
+        rand::thread_rng().fill_bytes(&mut buf);
+        hex::encode(buf)
+    };
+
+    s.install_bundles.write().await.insert(
+        token.clone(),
+        crate::state::InstallBundleEntry {
+            node_id: id,
+            enrollment_token,
+            master_endpoint: format!("https://{public_host}:{grpc_port}"),
+            enroll_endpoint,
+            ca_cert_b64: ca_b64,
+            created_at: std::time::Instant::now(),
+        },
+    );
+
+    Ok(Json(json!({ "token": token })))
+}
+
+#[derive(Serialize)]
+struct InstallBundlePayload {
+    master: String,
+    enroll: String,
+    node_id: String,
+    token: String,
+    ca_cert: String,
+}
+
+async fn get_install_bundle(
+    State(s): State<AppState>,
+    Path(token): Path<String>,
+) -> ApiResult<Json<InstallBundlePayload>> {
+    let bundles = s.install_bundles.read().await;
+    let entry = bundles
+        .get(&token)
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "安装包不存在或已过期"))?;
+    if entry.created_at.elapsed() > std::time::Duration::from_secs(86400) {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "安装包已过期"));
+    }
+    Ok(Json(InstallBundlePayload {
+        master: entry.master_endpoint.clone(),
+        enroll: entry.enroll_endpoint.clone(),
+        node_id: entry.node_id.clone(),
+        token: entry.enrollment_token.clone(),
+        ca_cert: entry.ca_cert_b64.clone(),
+    }))
 }
 
 async fn get_node_series(

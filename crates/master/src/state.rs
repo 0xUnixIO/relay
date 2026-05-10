@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use redis::aio::ConnectionManager;
@@ -12,6 +13,16 @@ use crate::pki::Pki;
 use crate::registry::NodeRegistry;
 use crate::series::{CounterDeltas, SeriesStore};
 use crate::upgrade::UpgradeResolver;
+
+#[derive(Clone)]
+pub struct InstallBundleEntry {
+    pub node_id: String,
+    pub enrollment_token: String,
+    pub master_endpoint: String,
+    pub enroll_endpoint: String,
+    pub ca_cert_b64: String,
+    pub created_at: Instant,
+}
 
 /// 节点心跳运行时（in-process L1 cache，单 master 真相源）。
 #[derive(Clone, Debug)]
@@ -45,6 +56,8 @@ pub struct AppState {
     pub upgrade_resolver: UpgradeResolver,
     /// 手动触发备份的通知信道。
     pub backup_trigger: Arc<Notify>,
+    /// 一次性安装包：token → 安装参数，有效期 24h。
+    pub install_bundles: Arc<RwLock<HashMap<String, InstallBundleEntry>>>,
 }
 
 impl AppState {
@@ -61,6 +74,7 @@ impl AppState {
             availability_seen: Arc::new(Mutex::new(HashSet::new())),
             upgrade_resolver: UpgradeResolver::new(crate::upgrade::DEFAULT_REPO),
             backup_trigger: Arc::new(Notify::new()),
+            install_bundles: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

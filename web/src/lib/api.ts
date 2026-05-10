@@ -353,6 +353,8 @@ export const Api = {
     }),
   rotateNodeToken: (id: string) =>
     api<RotateTokenResp>(`/api/v1/nodes/${id}/rotate-token`, { method: "POST" }),
+  createInstallBundle: (nodeId: string) =>
+    api<{ token: string }>(`/api/v1/nodes/${nodeId}/setup`, { method: "POST" }),
   serverInfo: () => api<ServerInfo>("/api/v1/server-info"),
   probeNodePort: (
     nodeId: string,
