@@ -283,18 +283,6 @@ impl ApiError {
             payload: None,
         }
     }
-    #[allow(dead_code)]
-    pub(crate) fn with_payload(
-        status: StatusCode,
-        msg: impl Into<String>,
-        payload: serde_json::Value,
-    ) -> Self {
-        Self {
-            status,
-            msg: msg.into(),
-            payload: Some(payload),
-        }
-    }
 }
 impl<E: std::fmt::Display> From<E> for ApiError {
     fn from(e: E) -> Self {
@@ -1353,18 +1341,7 @@ async fn probe_node_port(
 
 const VALID_PROTOCOLS: [&str; 2] = ["tcp", "udp"];
 const VALID_IP_PREF: [&str; 3] = ["", "ipv4", "ipv6"];
-const VALID_LB: [&str; 2] = ["round_robin", "primary_backup"];
-
-#[allow(dead_code)]
-fn validate_protocol(p: &str) -> Result<(), ApiError> {
-    if !VALID_PROTOCOLS.contains(&p) {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "protocol 必须是 tcp 或 udp",
-        ));
-    }
-    Ok(())
-}
+const VALID_LB: [&str; 4] = ["round_robin", "random", "least_latency", "primary_backup"];
 
 /// 校验并规范化 tunnel 协议集合：lowercase + dedupe + sort，必须是 ["tcp","udp"] 的非空子集。
 fn validate_protocols(input: &[String]) -> Result<Vec<String>, ApiError> {
@@ -1515,58 +1492,6 @@ async fn load_tunnel_view(db: &sqlx::PgPool, t: Tunnel) -> Result<TunnelView, Ap
         user_tunnel_count: count.0,
         forward_count: fwd_count.0,
     })
-}
-
-#[allow(dead_code)]
-async fn validate_tunnel_nodes(db: &sqlx::PgPool, node_ids: &[String]) -> Result<(), ApiError> {
-    if node_ids.is_empty() {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "至少需要一个节点",
-        ));
-    }
-    if node_ids.iter().any(|s| s.trim().is_empty()) {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "节点 ID 不能为空",
-        ));
-    }
-    let mut seen = HashSet::new();
-    for n in node_ids {
-        if !seen.insert(n.as_str()) {
-            return Err(ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "链路中节点不能重复",
-            ));
-        }
-    }
-    let rows: Vec<(String, Vec<String>, bool)> =
-        sqlx::query_as("SELECT id, server_ips, tunnel_eligible FROM nodes WHERE id = ANY($1)")
-            .bind(node_ids)
-            .fetch_all(db)
-            .await?;
-    let by_id: std::collections::HashMap<_, _> = rows
-        .into_iter()
-        .map(|(id, ips, eligible)| (id, (ips, eligible)))
-        .collect();
-    for (idx, n) in node_ids.iter().enumerate() {
-        let (ips, eligible) = by_id.get(n).ok_or_else(|| {
-            ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, format!("节点不存在：{n}"))
-        })?;
-        if !eligible {
-            return Err(ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!("节点 {n} 未开放隧道用途（tunnel_eligible = false）"),
-            ));
-        }
-        if idx > 0 && !ips.iter().any(|s| !s.trim().is_empty()) {
-            return Err(ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!("节点 {n} 作为中转/出口前需先配置 server_ips"),
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// Validate a layered DAG path. Each layer must be non-empty; nodes must

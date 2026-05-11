@@ -66,15 +66,6 @@ pub struct Tunnel {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-#[allow(dead_code)]
-pub struct TunnelHop {
-    #[serde(with = "crate::snowflake::as_str")]
-    pub tunnel_id: i64,
-    pub hop_index: i32,
-    pub node_id: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelView {
     #[serde(flatten)]
