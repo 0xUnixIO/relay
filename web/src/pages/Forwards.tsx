@@ -28,7 +28,7 @@ import {
   Api, type Forward, type Tunnel, type NodeInfo, type ForwardStatBucket, type ConnectionLog,
 } from "@/lib/api";
 import { fmtBytes } from "@/lib/utils";
-import { getRole } from "@/lib/auth";
+import { getRole, getToken } from "@/lib/auth";
 import { toast } from "sonner";
 
 
@@ -91,6 +91,7 @@ export default function ForwardsPage() {
   const [probeResult, setProbeResult] = useState<{
     forward: Forward;
     hops: import("@/lib/api").ForwardProbeHop[];
+    streaming: boolean;
   } | null>(null);
   const [statsTarget, setStatsTarget] = useState<Forward | null>(null);
   const [probeStatsTarget, setProbeStatsTarget] = useState<Forward | null>(null);
@@ -279,11 +280,42 @@ export default function ForwardsPage() {
 
   const probe = async (f: Forward) => {
     setProbing((p) => ({ ...p, [f.id]: true }));
+    // 立即打开弹窗，hops 为空，streaming=true
+    setProbeResult({ forward: f, hops: [], streaming: true });
     try {
-      const hops = await Api.probeForward(f.id);
-      setProbeResult({ forward: f, hops });
+      const token = getToken();
+      const res = await fetch(`/api/v1/forwards/${f.id}/probe-stream`, {
+        headers: token ? { authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok || !res.body) {
+        toast.error("探测失败");
+        setProbeResult(null);
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop()!;
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const hop = JSON.parse(line.slice(6));
+            setProbeResult((prev) =>
+              prev ? { ...prev, hops: [...prev.hops, hop] } : null
+            );
+          } catch {}
+        }
+      }
+      // 流结束，关闭 streaming 状态
+      setProbeResult((prev) => prev ? { ...prev, streaming: false } : null);
     } catch (e: any) {
       toast.error(e?.message ?? "探测失败");
+      setProbeResult(null);
     } finally {
       setProbing((p) => ({ ...p, [f.id]: false }));
     }
@@ -721,7 +753,7 @@ export default function ForwardsPage() {
           </DialogHeader>
           {probeResult && (
             <div className="space-y-3">
-              <ProbeTopology hops={probeResult.hops} />
+              <ProbeTopology hops={probeResult.hops} streaming={probeResult.streaming} />
               {probeResult.hops.some((h) => !h.ok) && (
                 <div className="rounded-md border border-rose-200 bg-rose-50/60 p-2 text-xs text-rose-700 dark:border-rose-900/40 dark:bg-rose-950/30 dark:text-rose-400">
                   {probeResult.hops.filter((h) => !h.ok).map((h, i) => (

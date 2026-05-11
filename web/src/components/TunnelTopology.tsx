@@ -3,7 +3,9 @@ interface TunnelTopologyProps {
   nodeNames: Record<string, string>;
 }
 
-const NODE_W = 96, NODE_H = 32, H_GAP = 80, V_GAP = 12, PAD = 16;
+const CLIENT_NODE_ID = "__client__";
+const EXIT_NODE_ID = "__exit__";
+const NODE_W = 84, NODE_H = 28, H_GAP = 56, V_GAP = 12, PAD = 16;
 
 /** 超过 12 字符时截断加省略号 */
 function truncate(s: string): string {
@@ -19,14 +21,25 @@ export function TunnelTopology({ layers, nodeNames }: TunnelTopologyProps) {
     );
   }
 
+  const displayLayers = [
+    [CLIENT_NODE_ID],
+    ...layers,
+    [EXIT_NODE_ID],
+  ];
+  const displayNodeNames: Record<string, string> = {
+    ...nodeNames,
+    [CLIENT_NODE_ID]: "客户端",
+    [EXIT_NODE_ID]: "出口",
+  };
+
   // 计算 SVG 画布尺寸
-  const maxPerLayer = Math.max(...layers.map((l) => l.length));
-  const svgW = PAD * 2 + layers.length * NODE_W + (layers.length - 1) * H_GAP;
+  const maxPerLayer = Math.max(...displayLayers.map((l) => l.length));
+  const svgW = PAD * 2 + displayLayers.length * NODE_W + (displayLayers.length - 1) * H_GAP;
   const svgH = PAD * 2 + maxPerLayer * NODE_H + (maxPerLayer - 1) * V_GAP;
 
   // 计算每个节点的坐标（左上角）
   const pos = new Map<string, { x: number; y: number }>();
-  layers.forEach((nodeIds, layerIdx) => {
+  displayLayers.forEach((nodeIds, layerIdx) => {
     const x = PAD + layerIdx * (NODE_W + H_GAP);
     const totalH = nodeIds.length * NODE_H + (nodeIds.length - 1) * V_GAP;
     const startY = PAD + (svgH - PAD * 2 - totalH) / 2;
@@ -37,9 +50,9 @@ export function TunnelTopology({ layers, nodeNames }: TunnelTopologyProps) {
 
   // 构建相邻层之间的连线：当前层每个节点 → 下一层每个节点
   const edges: Array<{ from: string; to: string }> = [];
-  for (let i = 0; i < layers.length - 1; i++) {
-    for (const fromId of layers[i]) {
-      for (const toId of layers[i + 1]) {
+  for (let i = 0; i < displayLayers.length - 1; i++) {
+    for (const fromId of displayLayers[i]) {
+      for (const toId of displayLayers[i + 1]) {
         edges.push({ from: fromId, to: toId });
       }
     }
@@ -75,7 +88,7 @@ export function TunnelTopology({ layers, nodeNames }: TunnelTopologyProps) {
 
       {/* 节点框 */}
       {[...pos.entries()].map(([id, { x, y }]) => {
-        const label = truncate(nodeNames[id] ?? id.slice(0, 12));
+        const label = truncate(displayNodeNames[id] ?? id.slice(0, 12));
         return (
           <g key={id}>
             <rect
@@ -103,8 +116,14 @@ export function TunnelTopology({ layers, nodeNames }: TunnelTopologyProps) {
       })}
 
       {/* 每层上方的 Hop 编号标签 */}
-      {layers.map((_, layerIdx) => {
+      {displayLayers.map((_, layerIdx) => {
         const x = PAD + layerIdx * (NODE_W + H_GAP) + NODE_W / 2;
+        const hopLabel =
+          layerIdx === 0
+            ? "Client"
+            : layerIdx === displayLayers.length - 1
+              ? "Exit"
+              : `Hop ${layerIdx - 1}`;
         return (
           <text
             key={layerIdx}
@@ -114,7 +133,7 @@ export function TunnelTopology({ layers, nodeNames }: TunnelTopologyProps) {
             fontSize={9}
             fill="hsl(var(--muted-foreground))"
           >
-            {`Hop ${layerIdx}`}
+            {hopLabel}
           </text>
         );
       })}

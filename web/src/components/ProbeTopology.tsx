@@ -1,7 +1,17 @@
 import type { ForwardProbeHop } from "@/lib/api";
 
-export function ProbeTopology({ hops }: { hops: ForwardProbeHop[] }) {
+export function ProbeTopology({ hops, streaming }: { hops: ForwardProbeHop[], streaming?: boolean }) {
   const NODE_W = 72, NODE_H = 28, H_GAP = 100, V_GAP = 44, PAD = 16;
+
+  // 空 hops 且仍在 streaming 时展示等待提示
+  if (hops.length === 0) {
+    return (
+      <div className="flex h-24 items-center justify-center gap-2 text-sm text-muted-foreground">
+        <span className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+        探测中，等待第一段结果…
+      </div>
+    );
+  }
 
   const labels = new Map<string, string>();
   for (const h of hops) {
@@ -126,6 +136,12 @@ export function ProbeTopology({ hops }: { hops: ForwardProbeHop[] }) {
           <span className="font-mono tabular-nums font-semibold" style={{ color: totalColor }}>
             {(total / 1000).toFixed(1)} ms
           </span>
+        </div>
+      )}
+      {streaming && (
+        <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
+          <span className="h-3 w-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          探测中…
         </div>
       )}
     </div>

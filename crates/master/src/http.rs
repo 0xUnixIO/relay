@@ -144,6 +144,10 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .route("/api/v1/forwards/:id/resume", post(resume_forward))
         .route("/api/v1/forwards/:id/redeploy", post(redeploy_forward))
         .route("/api/v1/forwards/:id/probe", post(probe_forward))
+        .route(
+            "/api/v1/forwards/:id/probe-stream",
+            get(probe_forward_stream),
+        )
         .route("/api/v1/forwards/batch/delete", post(batch_delete_forwards))
         .route("/api/v1/forwards/batch/pause", post(batch_pause_forwards))
         .route("/api/v1/forwards/batch/resume", post(batch_resume_forwards))
@@ -2090,22 +2094,20 @@ struct ForwardProbeHop {
     error: String,
 }
 
-async fn probe_forward(
-    State(s): State<AppState>,
-    Extension(claims): Extension<Claims>,
-    Path(id): Path<i64>,
-) -> ApiResult<Json<Vec<ForwardProbeHop>>> {
-    authorize_forward_access(&s.db, &claims, id).await?;
+/// 单段探测描述
+struct ProbeSegment {
+    from_node: String,
+    from_name: String,
+    to_node: String,
+    to_name: String,
+    target: String,
+}
 
-    // 鉴权之后再查缓存。v2 key 因数据形态变化（多节点层、to_node 字段）必须升级。
-    let cache_key = format!("probe:forward:v2:{}", id);
-    if let Some(cached) = cache::get_json::<Vec<ForwardProbeHop>>(&s.redis, &cache_key).await {
-        return Ok(Json(cached));
-    }
-
-    // Layered DAG: 每行 = (hop_index, node_id, name, ips, listen_port)。
-    // ❗JOIN 必须含 fp.node_id = th.node_id，否则同一 hop_index 下多节点
-    // 会与同 hop_index 下别的 forward_ports 行交叉。
+/// 从数据库查询并构建探测段列表（被 probe_forward 和 probe_forward_stream 共用）
+async fn build_probe_segments(
+    db: &sqlx::PgPool,
+    forward_id: i64,
+) -> Result<Vec<ProbeSegment>, ApiError> {
     #[derive(sqlx::FromRow)]
     struct HopRow {
         hop_index: i32,
@@ -2129,8 +2131,8 @@ async fn probe_forward(
           WHERE f.id = $1
           ORDER BY th.hop_index ASC, th.node_id ASC",
     )
-    .bind(id)
-    .fetch_all(&s.db)
+    .bind(forward_id)
+    .fetch_all(db)
     .await?;
 
     if hops.is_empty() {
@@ -2139,39 +2141,29 @@ async fn probe_forward(
 
     let remote_addrs: Option<Vec<String>> =
         sqlx::query_scalar("SELECT remote_addrs FROM forwards WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&s.db)
+            .bind(forward_id)
+            .fetch_optional(db)
             .await?;
     let upstreams = remote_addrs
         .filter(|v| !v.is_empty())
         .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "转发无上游地址"))?;
 
-    // Group by hop_index; layers[i] = Vec<HopRow>.
-    let mut layers: std::collections::BTreeMap<i32, Vec<&HopRow>> =
+    // 按 hop_index 分层
+    let mut layer_map: std::collections::BTreeMap<i32, Vec<usize>> =
         std::collections::BTreeMap::new();
-    for h in &hops {
-        layers.entry(h.hop_index).or_default().push(h);
+    for (idx, h) in hops.iter().enumerate() {
+        layer_map.entry(h.hop_index).or_default().push(idx);
     }
-    let layers: Vec<Vec<&HopRow>> = layers.into_values().collect();
+    let layers: Vec<Vec<usize>> = layer_map.into_values().collect();
 
-    // For each layer, build Cartesian segments:
-    //   from = each node in this layer
-    //   target = each (next_layer_node_ip : next_layer_listen_port);
-    //            for the last layer, target = upstream.
-    struct Seg {
-        from_node: String,
-        from_name: String,
-        to_node: String,
-        to_name: String,
-        target: String,
-    }
-    let mut segments: Vec<Seg> = Vec::new();
-    for (i, layer) in layers.iter().enumerate() {
+    let mut segments: Vec<ProbeSegment> = Vec::new();
+    for (i, layer_indices) in layers.iter().enumerate() {
         let is_last = i + 1 == layers.len();
-        for from in layer {
+        for &from_idx in layer_indices {
+            let from = &hops[from_idx];
             if is_last {
                 for upstream in &upstreams {
-                    segments.push(Seg {
+                    segments.push(ProbeSegment {
                         from_node: from.node_id.clone(),
                         from_name: from.node_name.clone(),
                         to_node: String::new(),
@@ -2180,8 +2172,9 @@ async fn probe_forward(
                     });
                 }
             } else {
-                let next_layer = &layers[i + 1];
-                for next in next_layer {
+                let next_layer_indices = &layers[i + 1];
+                for &next_idx in next_layer_indices {
+                    let next = &hops[next_idx];
                     let ip = next
                         .server_ips
                         .iter()
@@ -2189,7 +2182,7 @@ async fn probe_forward(
                         .cloned()
                         .unwrap_or_default();
                     let target = format!("{}:{}", ip, next.listen_port);
-                    segments.push(Seg {
+                    segments.push(ProbeSegment {
                         from_node: from.node_id.clone(),
                         from_name: from.node_name.clone(),
                         to_node: next.node_id.clone(),
@@ -2200,6 +2193,24 @@ async fn probe_forward(
             }
         }
     }
+
+    Ok(segments)
+}
+
+async fn probe_forward(
+    State(s): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<Vec<ForwardProbeHop>>> {
+    authorize_forward_access(&s.db, &claims, id).await?;
+
+    // 鉴权之后再查缓存。v2 key 因数据形态变化（多节点层、to_node 字段）必须升级。
+    let cache_key = format!("probe:forward:v2:{}", id);
+    if let Some(cached) = cache::get_json::<Vec<ForwardProbeHop>>(&s.redis, &cache_key).await {
+        return Ok(Json(cached));
+    }
+
+    let segments = build_probe_segments(&s.db, id).await?;
 
     let timeout = std::time::Duration::from_secs(5);
     let futures: Vec<_> = segments
@@ -2250,6 +2261,86 @@ async fn probe_forward(
         cache::set_json(&s.redis, &cache_key, &results, 5).await;
     }
     Ok(Json(results))
+}
+
+/// SSE 流式探测端点：每探测完一段就立刻推送该段结果
+async fn probe_forward_stream(
+    State(s): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(id): Path<i64>,
+) -> Response {
+    // 鉴权
+    if let Err(e) = authorize_forward_access(&s.db, &claims, id).await {
+        return e.into_response();
+    }
+    // 构建探测段
+    let segments = match build_probe_segments(&s.db, id).await {
+        Ok(segs) => segs,
+        Err(e) => return e.into_response(),
+    };
+    // mpsc channel，缓冲足够大
+    let (tx, rx) = tokio::sync::mpsc::channel::<ForwardProbeHop>(32);
+    // FuturesUnordered 并发探测，先完先发
+    let registry = s.registry.clone();
+    let timeout = std::time::Duration::from_secs(5);
+    tokio::spawn(async move {
+        let mut futs = futures::stream::FuturesUnordered::new();
+        for seg in segments {
+            let reg = registry.clone();
+            futs.push(async move {
+                let t = seg.target.clone();
+                let result = reg.probe(&seg.from_node, t.clone(), timeout).await;
+                match result {
+                    Ok(r) => ForwardProbeHop {
+                        from_node: seg.from_node,
+                        from_node_name: seg.from_name,
+                        to_node: seg.to_node,
+                        to_node_name: seg.to_name,
+                        target: t,
+                        ok: r.ok,
+                        latency_us: r.latency_us,
+                        error: r.error,
+                    },
+                    Err(crate::registry::ProbeError::NodeOffline) => ForwardProbeHop {
+                        from_node: seg.from_node,
+                        from_node_name: seg.from_name,
+                        to_node: seg.to_node,
+                        to_node_name: seg.to_name,
+                        target: t,
+                        ok: false,
+                        latency_us: 0,
+                        error: "节点未连接".into(),
+                    },
+                    Err(crate::registry::ProbeError::Timeout) => ForwardProbeHop {
+                        from_node: seg.from_node,
+                        from_node_name: seg.from_name,
+                        to_node: seg.to_node,
+                        to_node_name: seg.to_name,
+                        target: t,
+                        ok: false,
+                        latency_us: 0,
+                        error: "探测超时".into(),
+                    },
+                }
+            });
+        }
+        while let Some(hop) = futures::StreamExt::next(&mut futs).await {
+            if tx.send(hop).await.is_err() {
+                break;
+            }
+        }
+    });
+    // SSE 流
+    use tokio_stream::wrappers::ReceiverStream;
+    let stream = ReceiverStream::new(rx).map(|hop: ForwardProbeHop| {
+        Ok::<_, Infallible>(match serde_json::to_string(&hop) {
+            Ok(j) => Event::default().data(j),
+            Err(_) => Event::default().comment("err"),
+        })
+    });
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(3)))
+        .into_response()
 }
 
 async fn nodes_for_tunnel(db: &sqlx::PgPool, tunnel_id: i64) -> sqlx::Result<Vec<String>> {
