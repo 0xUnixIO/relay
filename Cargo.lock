@@ -2251,6 +2251,7 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tracing",
+ "uuid",
  "x509-parser",
 ]
 

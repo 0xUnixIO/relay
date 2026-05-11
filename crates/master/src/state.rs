@@ -29,6 +29,8 @@ pub struct SetupEntry {
 #[derive(Debug, Clone, Serialize)]
 pub struct ForwardStatEvent {
     pub forward_id: String,
+    pub node_id: String,
+    pub hop_index: u32,
     pub bytes_in: u64,
     pub bytes_out: u64,
     pub active_connections: u32,
@@ -40,6 +42,42 @@ pub struct ForwardStatEvent {
 pub struct NodeSpeed {
     pub rx_bps: f64,
     pub tx_bps: f64,
+}
+
+/// 内存中维护各转发当前活跃客户端 IP（去重），由 ForwardStats 快照更新。
+#[derive(Clone, Default)]
+pub struct ActiveConnStore(Arc<RwLock<HashMap<String, Vec<String>>>>);
+
+impl ActiveConnStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 更新某个转发的活跃 IP 列表（整体覆盖）。
+    pub async fn update(&self, forward_id: &str, ips: Vec<String>) {
+        let mut g = self.0.write().await;
+        if ips.is_empty() {
+            g.remove(forward_id);
+        } else {
+            g.insert(forward_id.to_string(), ips);
+        }
+    }
+
+    /// 获取某个转发的活跃 IP 列表。
+    pub async fn get(&self, forward_id: &str) -> Vec<String> {
+        self.0
+            .read()
+            .await
+            .get(forward_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// 获取所有转发的活跃 IP 快照。
+    #[allow(dead_code)]
+    pub async fn snapshot(&self) -> HashMap<String, Vec<String>> {
+        self.0.read().await.clone()
+    }
 }
 
 /// 节点心跳运行时（in-process L1 cache，单 master 真相源）。
@@ -80,6 +118,8 @@ pub struct AppState {
     pub stats_tx: broadcast::Sender<ForwardStatEvent>,
     /// 所有节点网速快照，每次 ForwardStats 写入后原地更新；watch 保证慢消费者不 lag。
     pub speed_tx: watch::Sender<HashMap<String, NodeSpeed>>,
+    /// 各转发当前活跃客户端 IP（内存快照，随 ForwardStats 更新）。
+    pub active_conns: ActiveConnStore,
 }
 
 impl AppState {
@@ -101,6 +141,7 @@ impl AppState {
             setup_tokens: Arc::new(RwLock::new(HashMap::new())),
             stats_tx,
             speed_tx,
+            active_conns: ActiveConnStore::new(),
         }
     }
 

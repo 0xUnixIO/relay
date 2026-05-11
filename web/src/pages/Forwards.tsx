@@ -3,7 +3,7 @@ import { useForwardStats } from "@/hooks/useForwardStats";
 import { useConfirm } from "@/hooks/useConfirm";
 import useSWR from "swr";
 import {
-  Plus, Pencil, Trash2, Pause, Play, RefreshCw, Activity, Shuffle, Check, Network, MoreHorizontal, BarChart2, LineChart,
+  Plus, Pencil, Trash2, Pause, Play, RefreshCw, Activity, Shuffle, Check, Network, MoreHorizontal, BarChart2, LineChart, Globe,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -25,7 +25,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  Api, type Forward, type Tunnel, type NodeInfo, type ForwardStatBucket,
+  Api, type Forward, type Tunnel, type NodeInfo, type ForwardStatBucket, type ConnectionLog,
 } from "@/lib/api";
 import { fmtBytes } from "@/lib/utils";
 import { getRole } from "@/lib/auth";
@@ -94,6 +94,7 @@ export default function ForwardsPage() {
   } | null>(null);
   const [statsTarget, setStatsTarget] = useState<Forward | null>(null);
   const [probeStatsTarget, setProbeStatsTarget] = useState<Forward | null>(null);
+  const [connLogsTarget, setConnLogsTarget] = useState<Forward | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
   const copy = (key: string, text: string) => {
@@ -481,6 +482,9 @@ export default function ForwardsPage() {
                               <DropdownMenuItem onClick={() => setProbeStatsTarget(f)}>
                                 <LineChart className="h-4 w-4 mr-2" />延迟统计
                               </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => setConnLogsTarget(f)}>
+                                <Globe className="h-4 w-4 mr-2" />连接日志
+                              </DropdownMenuItem>
                               <DropdownMenuSeparator />
                               <DropdownMenuItem onClick={() => toggle(f)}>
                                 {f.desired_enabled
@@ -686,6 +690,23 @@ export default function ForwardsPage() {
         </DialogContent>
       </Dialog>
 
+      {/* 连接日志 */}
+      <Dialog open={!!connLogsTarget} onOpenChange={(v) => !v && setConnLogsTarget(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Globe className="h-4 w-4" />
+              连接日志 · {connLogsTarget?.name}
+            </DialogTitle>
+            <DialogDescription>客户端连接历史，包含活跃及已断开连接</DialogDescription>
+          </DialogHeader>
+          {connLogsTarget && <ConnectionLogsPanel forwardId={connLogsTarget.id} />}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConnLogsTarget(null)}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* 延迟探测结果 */}
       <Dialog open={!!probeResult} onOpenChange={(v) => !v && setProbeResult(null)}>
         <DialogContent className="max-w-md">
@@ -811,6 +832,82 @@ function ForwardStatsChart({ forwardId }: { forwardId: string }) {
           </AreaChart>
         </ResponsiveContainer>
       )}
+    </div>
+  );
+}
+
+// ── 连接日志面板 ─────────────────────────────────────────────────────────────
+
+function ConnectionLogsPanel({ forwardId }: { forwardId: string }) {
+  const [page, setPage] = useState(1);
+  const limit = 50;
+  const { data, isLoading } = useSWR(
+    `conn-logs-${forwardId}-${page}`,
+    () => Api.listForwardConnections(forwardId, page, limit),
+    { refreshInterval: 15_000 },
+  );
+
+  const fmt = (ts: string) =>
+    new Date(ts).toLocaleString("zh-CN", {
+      month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
+
+  const duration = (log: ConnectionLog) => {
+    if (!log.disconnected_at) return <span className="text-emerald-500">活跃</span>;
+    const ms = new Date(log.disconnected_at).getTime() - new Date(log.connected_at).getTime();
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60_000) return `${(ms / 1000).toFixed(0)}s`;
+    return `${(ms / 60_000).toFixed(1)}m`;
+  };
+
+  if (isLoading) {
+    return <div className="py-8 text-center text-sm text-muted-foreground">加载中…</div>;
+  }
+
+  if (!data || data.length === 0) {
+    return (
+      <div className="py-8 text-center text-sm text-muted-foreground">
+        {page > 1 ? "没有更多记录" : "暂无连接记录"}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-md border overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b bg-muted/50">
+              <th className="px-3 py-2 text-left font-medium text-muted-foreground">客户端 IP</th>
+              <th className="px-3 py-2 text-left font-medium text-muted-foreground hidden sm:table-cell">节点</th>
+              <th className="px-3 py-2 text-left font-medium text-muted-foreground">连接时间</th>
+              <th className="px-3 py-2 text-left font-medium text-muted-foreground">时长</th>
+              <th className="px-3 py-2 text-right font-medium text-muted-foreground hidden sm:table-cell">下载</th>
+              <th className="px-3 py-2 text-right font-medium text-muted-foreground hidden sm:table-cell">上传</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {data.map((log) => (
+              <tr key={log.id} className="hover:bg-muted/30 transition-colors">
+                <td className="px-3 py-2 font-mono">{log.client_ip}</td>
+                <td className="px-3 py-2 text-muted-foreground hidden sm:table-cell font-mono truncate max-w-[8rem]">{log.node_id.slice(0, 12)}</td>
+                <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{fmt(log.connected_at)}</td>
+                <td className="px-3 py-2 whitespace-nowrap">{duration(log)}</td>
+                <td className="px-3 py-2 text-right font-mono text-muted-foreground hidden sm:table-cell">{fmtBytes(log.bytes_in)}</td>
+                <td className="px-3 py-2 text-right font-mono text-muted-foreground hidden sm:table-cell">{fmtBytes(log.bytes_out)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-muted-foreground">第 {page} 页，每页 {limit} 条</span>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>上一页</Button>
+          <Button size="sm" variant="outline" onClick={() => setPage((p) => p + 1)} disabled={data.length < limit}>下一页</Button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -32,6 +32,7 @@ thiserror.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
 bytes.workspace = true
+uuid.workspace = true
 ipnet = "2.10"
 rcgen = "0.13"
 base64 = "0.22.1"

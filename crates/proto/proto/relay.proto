@@ -17,6 +17,8 @@ message NodeMessage {
     RenewCertRequest renew_cert = 6;
     UpgradeReport upgrade_report = 7;
     UpstreamProbeSample upstream_probe = 8;
+    ClientConnectEvent    client_connect    = 9;
+    ClientDisconnectEvent client_disconnect = 10;
   }
 }
 
@@ -81,6 +83,25 @@ message ForwardStats {
   uint64 bytes_out = 4;
   uint32 active_connections = 5;
   uint64 total_connections = 6;
+  // 当前活跃连接的客户端 IP 列表（去重），随 snapshot 上报
+  repeated string active_client_ips = 7;
+}
+
+// 客户端建立连接时由入口节点发出。
+message ClientConnectEvent {
+  string forward_id  = 1;
+  uint32 hop_index   = 2;
+  string conn_id     = 3;  // 节点本地生成，唯一标识一次连接
+  string client_ip   = 4;
+  int64  ts_unix_ms  = 5;
+}
+
+// 客户端断开连接时由入口节点发出。
+message ClientDisconnectEvent {
+  string conn_id    = 1;
+  int64  ts_unix_ms = 2;
+  uint64 bytes_in   = 3;
+  uint64 bytes_out  = 4;
 }
 
 // Node 定期上报的 upstream TCP-connect probe 样本。

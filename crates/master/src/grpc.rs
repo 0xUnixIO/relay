@@ -446,11 +446,22 @@ async fn handle_inbound(
                     .await;
                 let _ = stats_tx.send(crate::state::ForwardStatEvent {
                     forward_id: st.forward_id.clone(),
+                    node_id: node_id.clone(),
+                    hop_index: st.hop_index,
                     bytes_in: st.bytes_in,
                     bytes_out: st.bytes_out,
                     active_connections: st.active_connections,
                     ts_unix_ms: now_ms,
                 });
+                // 入口跳快照：更新活跃客户端 IP 内存存储
+                if st.hop_index == 0 && !st.active_client_ips.is_empty() {
+                    state
+                        .active_conns
+                        .update(&st.forward_id, st.active_client_ips.clone())
+                        .await;
+                } else if st.hop_index == 0 && st.active_connections == 0 {
+                    state.active_conns.update(&st.forward_id, vec![]).await;
+                }
                 let (rx, tx) = series.node_speed(&node_id).await;
                 speed_tx.send_modify(|m| {
                     m.insert(
@@ -660,6 +671,53 @@ async fn handle_inbound(
                         .execute(&db)
                         .await;
                     }
+                });
+            }
+            NodePayload::ClientConnect(ev) => {
+                if let Ok(fwd_id) = ev.forward_id.parse::<i64>() {
+                    let db = db.clone();
+                    let node_id = node_id.clone();
+                    let log_id = crate::snowflake::next_id();
+                    let connected_at =
+                        chrono::DateTime::<Utc>::from_timestamp_millis(ev.ts_unix_ms)
+                            .unwrap_or_else(Utc::now);
+                    tokio::spawn(async move {
+                        let _ = sqlx::query(
+                            "INSERT INTO connection_logs \
+                             (id, forward_id, node_id, conn_id, client_ip, connected_at) \
+                             VALUES ($1, $2, $3, $4, $5, $6) \
+                             ON CONFLICT (conn_id) DO NOTHING",
+                        )
+                        .bind(log_id)
+                        .bind(fwd_id)
+                        .bind(&node_id)
+                        .bind(&ev.conn_id)
+                        .bind(&ev.client_ip)
+                        .bind(connected_at)
+                        .execute(&db)
+                        .await;
+                    });
+                }
+            }
+            NodePayload::ClientDisconnect(ev) => {
+                let db = db.clone();
+                let disconnected_at = chrono::DateTime::<Utc>::from_timestamp_millis(ev.ts_unix_ms)
+                    .unwrap_or_else(Utc::now);
+                tokio::spawn(async move {
+                    let _ = sqlx::query(
+                        "UPDATE connection_logs \
+                            SET disconnected_at = $2, \
+                                bytes_in        = $3, \
+                                bytes_out       = $4 \
+                          WHERE conn_id = $1 \
+                            AND disconnected_at IS NULL",
+                    )
+                    .bind(&ev.conn_id)
+                    .bind(disconnected_at)
+                    .bind(ev.bytes_in as i64)
+                    .bind(ev.bytes_out as i64)
+                    .execute(&db)
+                    .await;
                 });
             }
             NodePayload::UpgradeReport(rep) => {

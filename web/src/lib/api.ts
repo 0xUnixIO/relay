@@ -232,6 +232,8 @@ export interface Forward {
   entry_addrs?: string[];
   /** lb_strategy='best' 时当前评分最优的上游地址 */
   best_exit_addr?: string | null;
+  /** 当前活跃客户端 IP 列表（随 ForwardStats 快照更新） */
+  active_client_ips?: string[];
 }
 
 export interface CreateForwardReq {
@@ -536,11 +538,17 @@ export const Api = {
   getGlobalTrafficStats: (period: "1h" | "6h" | "24h" | "7d" = "1h") =>
     api<ForwardStatBucket[]>(`/api/v1/stats/traffic?period=${period}`),
 
+  getNodeTrafficStats: (period: "1h" | "6h" | "24h" | "7d" = "1h") =>
+    api<NodeTrafficItem[]>(`/api/v1/stats/nodes/traffic?period=${period}`),
+
   getForwardProbeStats: (id: string) =>
     api<UpstreamProbeStats[]>(`/api/v1/forwards/${id}/probe-stats`),
 
   getForwardProbeSeries: (id: string, period: "1h" | "24h" | "7d" = "24h") =>
     api<ProbeSample[]>(`/api/v1/forwards/${id}/probe-series?period=${period}`),
+
+  listForwardConnections: (id: string, page = 1, limit = 50) =>
+    api<ConnectionLog[]>(`/api/v1/forwards/${id}/connections?page=${page}&limit=${limit}`),
 };
 
 export interface SystemConfig {
@@ -724,6 +732,13 @@ export interface ForwardStatBucket {
   peak_conns: number;
 }
 
+export interface NodeTrafficItem {
+  node_id:   string;
+  hostname:  string;
+  bytes_in:  number;
+  bytes_out: number;
+}
+
 // ---------- Forward Probe Stats ----------
 
 export interface ProbeSample {
@@ -731,6 +746,19 @@ export interface ProbeSample {
   upstream_addr: string;
   avg_latency_us: number | null;
   loss_rate: number;
+}
+
+// ---------- Connection Logs ----------
+
+export interface ConnectionLog {
+  id: string;
+  node_id: string;
+  conn_id: string;
+  client_ip: string;
+  connected_at: string;
+  disconnected_at: string | null;
+  bytes_in: number;
+  bytes_out: number;
 }
 
 export interface UpstreamProbeStats {

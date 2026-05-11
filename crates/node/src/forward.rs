@@ -107,7 +107,8 @@ pub fn bind_udp_socket(addr: std::net::SocketAddr) -> Result<UdpSocket> {
 }
 
 use relay_proto::v1::{
-    ConfigAck, ConfigUpdate, ForwardConfig, ForwardStats, Protocol, UpstreamProbeSample,
+    node_message::Payload as NodePayload, ClientConnectEvent, ClientDisconnectEvent, ConfigAck,
+    ConfigUpdate, ForwardConfig, ForwardStats, NodeMessage, Protocol, UpstreamProbeSample,
 };
 
 use crate::acl::Acl;
@@ -124,6 +125,8 @@ pub struct Engine {
     rate_limiters: Mutex<HashMap<LimiterKey, (u64, SharedLimiter)>>,
     /// probe 样本缓冲，由 main.rs 定期排空并通过 gRPC 上报。
     pub probe_buf: Arc<Mutex<Vec<UpstreamProbeSample>>>,
+    /// 连接建立/断开事件缓冲，由 main.rs 定期排空并通过 gRPC 上报。
+    pub conn_event_buf: Arc<Mutex<Vec<NodeMessage>>>,
 }
 
 struct Running {
@@ -141,6 +144,8 @@ struct Counters {
     bytes_out: AtomicU64,
     active: AtomicU64,
     total: AtomicU64,
+    // conn_id -> client_ip（入口跳维护，用于活跃 IP 快照和断开事件）
+    active_peers: Mutex<std::collections::HashMap<String, std::net::IpAddr>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,6 +208,18 @@ impl Engine {
             let bytes_out = r.counters.bytes_out.load(Ordering::Relaxed);
             let active = r.counters.active.load(Ordering::Relaxed) as u32;
             let total = r.counters.total.load(Ordering::Relaxed);
+            // 只有入口跳（hop_index=0）维护 active_peers
+            let active_ips: Vec<String> = if r.spec.hop_index == 0 {
+                r.counters
+                    .active_peers
+                    .lock()
+                    .await
+                    .values()
+                    .map(|ip| ip.to_string())
+                    .collect()
+            } else {
+                vec![]
+            };
             by_key
                 .entry(key)
                 .and_modify(|s| {
@@ -210,6 +227,10 @@ impl Engine {
                     s.bytes_out = s.bytes_out.saturating_add(bytes_out);
                     s.active_connections = s.active_connections.saturating_add(active);
                     s.total_connections = s.total_connections.saturating_add(total);
+                    // active_ips 直接覆盖（同 forward 同 hop 不会有多条 listener）
+                    if !active_ips.is_empty() {
+                        s.active_client_ips = active_ips.clone();
+                    }
                 })
                 .or_insert(ForwardStats {
                     forward_id: r.spec.forward_id.clone(),
@@ -218,6 +239,7 @@ impl Engine {
                     bytes_out,
                     active_connections: active,
                     total_connections: total,
+                    active_client_ips: active_ips,
                 });
         }
         by_key.into_values().collect()
@@ -284,6 +306,7 @@ impl Engine {
                 counters.clone(),
                 limiter,
                 self.probe_buf.clone(),
+                self.conn_event_buf.clone(),
             )
             .await
             {
@@ -418,6 +441,7 @@ impl Engine {
                 counters.clone(),
                 limiter,
                 self.probe_buf.clone(),
+                self.conn_event_buf.clone(),
             )
             .await
             {
@@ -459,6 +483,10 @@ async fn resolve_upstreams(addrs: &[String]) -> Result<Vec<SocketAddr>> {
     Ok(out)
 }
 
+fn gen_conn_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 async fn start_tunnel(
     spec: TunnelSpec,
     resolved: Vec<SocketAddr>,
@@ -466,6 +494,7 @@ async fn start_tunnel(
     counters: Arc<Counters>,
     rate_limiter: Arc<Option<RateLimiter>>,
     probe_buf: Arc<Mutex<Vec<UpstreamProbeSample>>>,
+    conn_event_buf: Arc<Mutex<Vec<NodeMessage>>>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let listen: SocketAddr = spec.listen_addr.parse()?;
 
@@ -561,8 +590,10 @@ async fn start_tunnel(
                 spec.max_connections as usize
             };
             let sem = Arc::new(Semaphore::new(max));
+            let is_entry = spec.hop_index == 0;
             tokio::spawn(run_tcp(
                 spec.id.clone(),
+                spec.forward_id.clone(),
                 listener,
                 upstreams,
                 cursor,
@@ -573,6 +604,8 @@ async fn start_tunnel(
                 rate_limiter,
                 spec.lb_strategy.clone(),
                 latency_map,
+                is_entry,
+                conn_event_buf,
             ))
         }
         Protocol::Udp => {
@@ -597,6 +630,7 @@ async fn start_tunnel(
 #[allow(clippy::too_many_arguments)]
 async fn run_tcp(
     id: String,
+    forward_id: String,
     listener: TcpListener,
     upstreams: Arc<Vec<SocketAddr>>,
     cursor: Arc<AtomicUsize>,
@@ -607,6 +641,8 @@ async fn run_tcp(
     rate_limiter: Arc<Option<RateLimiter>>,
     lb_strategy: String,
     latency_map: Arc<RwLock<Vec<u64>>>,
+    is_entry: bool,
+    conn_event_buf: Arc<Mutex<Vec<NodeMessage>>>,
 ) {
     loop {
         let permit = match sem.clone().acquire_owned().await {
@@ -624,6 +660,24 @@ async fn run_tcp(
                             drop(inbound);
                             continue;
                         }
+                        let conn_id = gen_conn_id();
+                        let ts_unix_ms = now_ms();
+
+                        // 入口跳：记录 active_peers + 发 ConnectEvent
+                        if is_entry {
+                            counters.active_peers.lock().await
+                                .insert(conn_id.clone(), peer.ip());
+                            conn_event_buf.lock().await.push(NodeMessage {
+                                payload: Some(NodePayload::ClientConnect(ClientConnectEvent {
+                                    forward_id: forward_id.clone(),
+                                    hop_index: 0,
+                                    conn_id: conn_id.clone(),
+                                    client_ip: peer.ip().to_string(),
+                                    ts_unix_ms,
+                                })),
+                            });
+                        }
+
                         let cancel = cancel.clone();
                         let id = id.clone();
                         let counters = counters.clone();
@@ -632,12 +686,33 @@ async fn run_tcp(
                         let rate_limiter = rate_limiter.clone();
                         let lb = lb_strategy.clone();
                         let lmap = latency_map.clone();
+                        let conn_event_buf2 = conn_event_buf.clone();
                         counters.total.fetch_add(1, Ordering::Relaxed);
                         counters.active.fetch_add(1, Ordering::Relaxed);
                         tokio::spawn(async move {
                             let _permit = permit;
+                            // 记录连接开始时的字节数，用于计算本次连接的增量
+                            let bytes_in_before  = counters.bytes_in.load(Ordering::Relaxed);
+                            let bytes_out_before = counters.bytes_out.load(Ordering::Relaxed);
                             let res = pipe_tcp(inbound, upstreams, cursor, &counters, &cancel, &rate_limiter, &lb, &lmap).await;
                             counters.active.fetch_sub(1, Ordering::Relaxed);
+
+                            if is_entry {
+                                counters.active_peers.lock().await.remove(&conn_id);
+                                let d_in  = counters.bytes_in.load(Ordering::Relaxed)
+                                    .saturating_sub(bytes_in_before);
+                                let d_out = counters.bytes_out.load(Ordering::Relaxed)
+                                    .saturating_sub(bytes_out_before);
+                                conn_event_buf2.lock().await.push(NodeMessage {
+                                    payload: Some(NodePayload::ClientDisconnect(ClientDisconnectEvent {
+                                        conn_id,
+                                        ts_unix_ms: now_ms(),
+                                        bytes_in:  d_in,
+                                        bytes_out: d_out,
+                                    })),
+                                });
+                            }
+
                             if let Err(e) = res {
                                 tracing::debug!(tunnel = %id, %peer, error = %e, "tcp session ended");
                             }
@@ -652,6 +727,13 @@ async fn run_tcp(
         }
     }
     tracing::info!(tunnel = %id, "tcp listener stopped");
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// 对 TcpStream 启用 keepalive：60s 空闲后开始探测，10s 间隔，Linux 下最多 3 次。

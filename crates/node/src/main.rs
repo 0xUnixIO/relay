@@ -260,6 +260,26 @@ async fn run_session(
         }
     });
 
+    // 连接事件上报（ConnectEvent / DisconnectEvent），5s 排空一次缓冲。
+    let conn_tx = tx.clone();
+    let conn_engine = engine.clone();
+    let conn_handle = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            let events = {
+                let mut buf = conn_engine.conn_event_buf.lock().await;
+                std::mem::take(&mut *buf)
+            };
+            for msg in events {
+                if conn_tx.send(msg).await.is_err() {
+                    return;
+                }
+            }
+        }
+    });
+
     let result: Result<SessionExit> = async {
         loop {
             tokio::select! {
@@ -330,6 +350,7 @@ async fn run_session(
     stats_handle.abort();
     dns_handle.abort();
     probe_handle.abort();
+    conn_handle.abort();
     *cert_session.outbound.lock().await = None;
     result
 }

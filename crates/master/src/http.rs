@@ -155,12 +155,20 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .route("/api/v1/auth/me/password", post(change_own_password))
         .route("/api/v1/events/forwards", get(forward_stats_stream))
         .route("/api/v1/forwards/:id/stats", get(forward_stats_history))
+        .route(
+            "/api/v1/forwards/:id/connections",
+            get(forward_connections_handler),
+        )
         .route("/api/v1/forwards/:id/probe-stats", get(forward_probe_stats))
         .route(
             "/api/v1/forwards/:id/probe-series",
             get(forward_probe_series),
         )
-        .route("/api/v1/stats/traffic", get(global_traffic_stats_handler));
+        .route("/api/v1/stats/traffic", get(global_traffic_stats_handler))
+        .route(
+            "/api/v1/stats/nodes/traffic",
+            get(node_traffic_stats_handler),
+        );
 
     let protected = admin
         .merge(user)
@@ -2634,7 +2642,7 @@ async fn list_forwards(
 
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
-        out.push(build_forward_view(&s.db, &s.series, r).await?);
+        out.push(build_forward_view(&s.db, &s.series, &s.active_conns, r).await?);
     }
     Ok(Json(out))
 }
@@ -2654,6 +2662,7 @@ struct ForwardRowEx {
 async fn build_forward_view(
     db: &sqlx::PgPool,
     series: &crate::series::SeriesStore,
+    active_conns: &crate::state::ActiveConnStore,
     r: ForwardRowEx,
 ) -> Result<ForwardView, ApiError> {
     let ports: Vec<ForwardPort> = sqlx::query_as(
@@ -2729,6 +2738,8 @@ async fn build_forward_view(
             None
         };
 
+    let active_client_ips = active_conns.get(&r.f.id.to_string()).await;
+
     Ok(ForwardView {
         forward: r.f,
         user_id: r.user_id,
@@ -2743,6 +2754,7 @@ async fn build_forward_view(
         entry_addr,
         entry_addrs,
         best_exit_addr,
+        active_client_ips,
     })
 }
 
@@ -3010,7 +3022,7 @@ async fn create_forward(
 
     let row = fetch_forward_row(&s.db, forward.id).await?;
     Ok(Json(CreateForwardResp {
-        view: build_forward_view(&s.db, &s.series, row).await?,
+        view: build_forward_view(&s.db, &s.series, &s.active_conns, row).await?,
         port_warnings,
     }))
 }
@@ -3037,7 +3049,9 @@ async fn get_forward(
 ) -> ApiResult<Json<ForwardView>> {
     authorize_forward_access(&s.db, &claims, id).await?;
     let row = fetch_forward_row(&s.db, id).await?;
-    Ok(Json(build_forward_view(&s.db, &s.series, row).await?))
+    Ok(Json(
+        build_forward_view(&s.db, &s.series, &s.active_conns, row).await?,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -3206,7 +3220,9 @@ async fn update_forward(
     .await?;
     bump_and_push_forwards(&s, &[id]).await;
     let row = fetch_forward_row(&s.db, id).await?;
-    Ok(Json(build_forward_view(&s.db, &s.series, row).await?))
+    Ok(Json(
+        build_forward_view(&s.db, &s.series, &s.active_conns, row).await?,
+    ))
 }
 
 async fn delete_forward(
@@ -3660,6 +3676,76 @@ async fn forward_stats_stream(
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
+// ── 连接日志 ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct ConnectionLogItem {
+    #[serde(with = "crate::snowflake::as_str")]
+    id: i64,
+    node_id: String,
+    conn_id: String,
+    client_ip: String,
+    connected_at: DateTime<Utc>,
+    disconnected_at: Option<DateTime<Utc>>,
+    bytes_in: i64,
+    bytes_out: i64,
+}
+
+#[derive(Deserialize)]
+struct ConnectionsQuery {
+    /// 页码，从 1 开始
+    #[serde(default = "conn_default_page")]
+    page: i64,
+    #[serde(default = "conn_default_limit")]
+    limit: i64,
+}
+fn conn_default_page() -> i64 {
+    1
+}
+fn conn_default_limit() -> i64 {
+    50
+}
+
+async fn forward_connections_handler(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+    Query(q): Query<ConnectionsQuery>,
+) -> ApiResult<Json<Vec<ConnectionLogItem>>> {
+    let limit = q.limit.clamp(1, 200);
+    let offset = (q.page.max(1) - 1) * limit;
+
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT id, node_id, conn_id, client_ip, connected_at, disconnected_at, bytes_in, bytes_out
+           FROM connection_logs
+          WHERE forward_id = $1
+          ORDER BY connected_at DESC
+          LIMIT $2 OFFSET $3",
+    )
+    .bind(id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&s.db)
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let items = rows
+        .iter()
+        .map(|r| ConnectionLogItem {
+            id: r.get("id"),
+            node_id: r.get("node_id"),
+            conn_id: r.get("conn_id"),
+            client_ip: r.get("client_ip"),
+            connected_at: r.get("connected_at"),
+            disconnected_at: r.get("disconnected_at"),
+            bytes_in: r.get("bytes_in"),
+            bytes_out: r.get("bytes_out"),
+        })
+        .collect();
+
+    Ok(Json(items))
+}
+
 // ── 转发历史流量统计 ───────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -3762,6 +3848,57 @@ async fn global_traffic_stats_handler(
         .collect();
 
     Ok(Json(buckets))
+}
+
+// ── 节点流量统计 ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct NodeTrafficItem {
+    node_id: String,
+    hostname: String,
+    bytes_in: i64,
+    bytes_out: i64,
+}
+
+async fn node_traffic_stats_handler(
+    State(s): State<AppState>,
+    Query(q): Query<StatsHistoryQuery>,
+) -> ApiResult<Json<Vec<NodeTrafficItem>>> {
+    let since = match q.period.as_deref() {
+        Some("7d") => "7 days",
+        Some("24h") => "24 hours",
+        Some("6h") => "6 hours",
+        _ => "1 hour",
+    };
+
+    use sqlx::Row;
+    let rows = sqlx::query(
+        "SELECT ns.node_id,
+                COALESCE(n.hostname, ns.node_id) AS hostname,
+                SUM(ns.bytes_in)::BIGINT          AS bytes_in,
+                SUM(ns.bytes_out)::BIGINT         AS bytes_out
+           FROM node_stats ns
+           LEFT JOIN nodes n ON n.id = ns.node_id
+          WHERE ns.ts >= now() - $1::interval
+          GROUP BY ns.node_id, n.hostname
+          ORDER BY bytes_in + bytes_out DESC",
+    )
+    .bind(since)
+    .fetch_all(&s.db)
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let items: Vec<NodeTrafficItem> = rows
+        .iter()
+        .map(|r| NodeTrafficItem {
+            node_id: r.get("node_id"),
+            hostname: r.get("hostname"),
+            bytes_in: r.get("bytes_in"),
+            bytes_out: r.get("bytes_out"),
+        })
+        .collect();
+
+    Ok(Json(items))
 }
 
 // ── Upstream probe 延迟统计 ────────────────────────────────────────────────────

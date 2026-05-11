@@ -177,6 +177,9 @@ pub struct ForwardView {
     /// 当 lb_strategy='best' 时，当前评分最优的上游地址（nil 表示暂无探测数据）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub best_exit_addr: Option<String>,
+    /// 当前活跃客户端 IP 列表（内存快照，随 ForwardStats 更新，最多滞后 30s）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_client_ips: Vec<String>,
 }
 
 // ---------- User Groups ----------

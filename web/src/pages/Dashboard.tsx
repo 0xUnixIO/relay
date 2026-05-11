@@ -1,9 +1,10 @@
 import { timeAgo, fmtBytes } from "@/lib/utils";
 import { Link } from "react-router-dom";
-import { Server, Network, Zap, Activity } from "lucide-react";
+import { Server, Network, Zap, Activity, Globe } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { Api, type NodeInfo, type ForwardStatBucket } from "@/lib/api";
+import { Api, type NodeInfo, type ForwardStatBucket, type NodeTrafficItem } from "@/lib/api";
 import useSWR from "swr";
 import { ProtocolSetBadge } from "@/components/ui/protocol-set-badge";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -12,7 +13,7 @@ import {
   AreaChart, Area,
   BarChart, Bar,
   XAxis, YAxis,
-  Tooltip,
+  Tooltip as ReTooltip,
   ResponsiveContainer,
 } from "recharts";
 
@@ -72,26 +73,24 @@ export default function Dashboard() {
     bytes_out: b.bytes_out,
   }));
 
+  // ---------- 节点流量（来自 node_stats 表，每节点真实吞吐）----------
+  const [nodePeriod, setNodePeriod] = useState<Period>("24h");
+  const { data: rawNodeTraffic = [] } = useSWR(
+    ["nodeTraffic", nodePeriod],
+    () => Api.getNodeTrafficStats(nodePeriod),
+    { refreshInterval: 60_000 },
+  );
+  const nodeTraffic = (rawNodeTraffic as NodeTrafficItem[]).map((n) => ({
+    name: n.hostname || n.node_id.slice(0, 8),
+    bytes_in: n.bytes_in,
+    bytes_out: n.bytes_out,
+  }));
+
   // ---------- 其余统计 ----------
   const online = nodes.filter(isOnline);
   const offline = nodes.filter((n) => !isOnline(n));
   const enabled = forwards.filter((f) => f.effective_enabled);
   const totalConns = forwards.reduce((s, f) => s + (f.active_connections ?? 0), 0);
-
-  // 各节点流量聚合（所有经过该节点的转发流量之和）
-  const nodeTraffic = nodes
-    .map((n) => {
-      let bytes_in = 0, bytes_out = 0;
-      for (const f of forwards) {
-        if (f.ports.some((p) => p.node_id === n.id)) {
-          bytes_in  += f.in_flow_bytes;
-          bytes_out += f.out_flow_bytes;
-        }
-      }
-      return { name: n.hostname || n.id.slice(0, 8), bytes_in, bytes_out };
-    })
-    .filter((n) => n.bytes_in > 0 || n.bytes_out > 0)
-    .sort((a, b) => (b.bytes_in + b.bytes_out) - (a.bytes_in + a.bytes_out));
 
   // "active" = effective_enabled and entry node online.
   const active = enabled.filter((f) => {
@@ -179,7 +178,7 @@ export default function Dashboard() {
                 tick={{ fontSize: 11 }}
                 tickFormatter={(v: number) => fmtBytes(v)}
               />
-              <Tooltip content={<FlowTooltip />} />
+              <ReTooltip content={<FlowTooltip />} />
               <Area
                 type="monotone"
                 dataKey="bytes_in"
@@ -209,7 +208,17 @@ export default function Dashboard() {
       {nodeTraffic.length > 0 && (
         <div className="rounded-lg border p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">节点流量分布</h2>
+            <div className="flex items-center gap-4">
+              <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">节点流量分布</h2>
+              <div className="flex items-center gap-1">
+                {(["1h", "6h", "24h", "7d"] as Period[]).map((p) => (
+                  <Button key={p} size="sm" variant={nodePeriod === p ? "default" : "ghost"}
+                    className="h-6 px-2 text-xs" onClick={() => setNodePeriod(p)}>
+                    {p === "1h" ? "1 小时" : p === "6h" ? "6 小时" : p === "24h" ? "24 小时" : "7 天"}
+                  </Button>
+                ))}
+              </div>
+            </div>
             <div className="flex items-center gap-4 text-xs text-muted-foreground">
               <span className="flex items-center gap-1.5">
                 <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: "hsl(var(--primary))" }} />
@@ -232,8 +241,8 @@ export default function Dashboard() {
                 tickFormatter={(v: number) => fmtBytes(v)} width={64} />
               <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} tickLine={false}
                 axisLine={false} width={80} />
-              <Tooltip
-                formatter={(v, name) => [fmtBytes(Number(v)), name === "bytes_in" ? "下载" : "上传"]}
+              <ReTooltip
+                formatter={(v: any, name: any) => [fmtBytes(Number(v)), name === "bytes_in" ? "下载" : "上传"]}
                 contentStyle={{ background: "hsl(var(--background))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
               />
               <Bar dataKey="bytes_in" name="下载" fill="hsl(var(--primary))" opacity={0.85} radius={[0, 3, 3, 0]} />
@@ -330,6 +339,24 @@ export default function Dashboard() {
                   <div className="flex items-center gap-4 shrink-0 ml-4">
                     {f.active_connections > 0 && (
                       <span className="text-sm text-emerald-500 tabular-nums">{f.active_connections} 连接</span>
+                    )}
+                    {f.active_client_ips && f.active_client_ips.length > 0 && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="flex items-center gap-1 text-xs text-sky-500 cursor-default tabular-nums">
+                            <Globe className="h-3 w-3" />
+                            {f.active_client_ips.length} IP
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent className="font-mono text-xs max-w-xs">
+                          <div className="space-y-0.5">
+                            {f.active_client_ips.slice(0, 20).map((ip) => <div key={ip}>{ip}</div>)}
+                            {f.active_client_ips.length > 20 && (
+                              <div className="text-muted-foreground">…还有 {f.active_client_ips.length - 20} 个</div>
+                            )}
+                          </div>
+                        </TooltipContent>
+                      </Tooltip>
                     )}
                     <span className="font-mono text-xs text-muted-foreground hidden sm:flex gap-1.5">
                       <span title="入站">↓{fmtBytes(f.in_flow_bytes)}</span>
