@@ -1,7 +1,7 @@
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
 import React from "react";
-import { LayoutDashboard, Server, Network, Route as RouteIcon, LogOut, Github, Sun, Moon, Users, Package, User as UserIcon, Settings, Menu, ArrowUpCircle, Loader2 } from "lucide-react";
+import { LayoutDashboard, Server, Network, Route as RouteIcon, LogOut, Github, Sun, Moon, Users, Package, User as UserIcon, Settings, Menu, ArrowUpCircle, Loader2, Activity } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -57,6 +57,7 @@ const userAreaNav: NavGroup[] = [
   { group: null, items: [
     { to: "/user-home", label: "首页", icon: LayoutDashboard },
     { to: "/forwards", label: "转发", icon: Network },
+    { to: "/probe", label: "监控", icon: Activity },
     { to: "/me", label: "账户", icon: UserIcon },
   ]},
 ];
@@ -66,11 +67,12 @@ const userOnlyNav: NavGroup[] = [
   { group: null, items: [
     { to: "/", label: "首页", icon: LayoutDashboard, end: true },
     { to: "/forwards", label: "转发", icon: Network },
+    { to: "/probe", label: "监控", icon: Activity },
     { to: "/me", label: "账户", icon: UserIcon },
   ]},
 ];
 
-const USER_AREA_PATHS = ["/user-home", "/forwards", "/me"];
+const USER_AREA_PATHS = ["/user-home", "/forwards", "/me", "/probe"];
 const AREA_STORAGE_KEY = "relay.area";
 
 function deriveArea(pathname: string, fallback: Area): Area {
@@ -182,8 +184,9 @@ export default function Layout() {
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
       {!bootReady && <BootSplash />}
+      {/* AreaSwitcher：桌面端 fixed 浮动居中；移动端移入 header 内部，避免 fixed 层遮挡汉堡/退出按钮 */}
       {isAdmin && (
-        <div className="pointer-events-none fixed inset-x-0 top-0 z-[60] flex h-14 items-center justify-center">
+        <div className="pointer-events-none fixed inset-x-0 top-0 z-[60] hidden md:flex h-14 items-center justify-center">
           <div className="pointer-events-auto -translate-y-[3px] drop-shadow-[0_6px_14px_rgba(0,0,0,0.18)] dark:drop-shadow-[0_6px_18px_rgba(0,0,0,0.55)]">
             <AreaSwitcher value={area} onChange={setArea} />
           </div>
@@ -321,8 +324,15 @@ export default function Layout() {
             >
               <Menu className="h-5 w-5" />
             </Button>
-
           </div>
+          {/* 移动端 AreaSwitcher：绝对居中，不占用 flex 流，左右两侧仍可点击 */}
+          {isAdmin && (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center md:hidden">
+              <div className="pointer-events-auto drop-shadow-[0_4px_10px_rgba(0,0,0,0.15)] dark:drop-shadow-[0_4px_12px_rgba(0,0,0,0.45)]">
+                <AreaSwitcher value={area} onChange={setArea} />
+              </div>
+            </div>
+          )}
           <div className="flex items-center gap-2 text-sm">
             <span className="text-muted-foreground hidden sm:block">{user ?? "—"}</span>
             <Button variant="ghost" size="icon" onClick={(e) => toggle(e)} aria-label="切换主题">

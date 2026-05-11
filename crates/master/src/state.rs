@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use redis::aio::ConnectionManager;
 use serde::Serialize;
 use sqlx::PgPool;
-use tokio::sync::{broadcast, Mutex, Notify, RwLock};
+use tokio::sync::{broadcast, watch, Mutex, Notify, RwLock};
 
 use crate::config::Config;
 use crate::models::Node;
@@ -33,6 +33,13 @@ pub struct ForwardStatEvent {
     pub bytes_out: u64,
     pub active_connections: u32,
     pub ts_unix_ms: i64,
+}
+
+/// 单节点实时网速，作为 watch channel 快照中的值。
+#[derive(Debug, Clone, Serialize)]
+pub struct NodeSpeed {
+    pub rx_bps: f64,
+    pub tx_bps: f64,
 }
 
 /// 节点心跳运行时（in-process L1 cache，单 master 真相源）。
@@ -71,11 +78,14 @@ pub struct AppState {
     pub setup_tokens: Arc<RwLock<HashMap<String, SetupEntry>>>,
     /// 节点上报的转发流量事件广播，SSE 端点订阅此 channel 实时推送。
     pub stats_tx: broadcast::Sender<ForwardStatEvent>,
+    /// 所有节点网速快照，每次 ForwardStats 写入后原地更新；watch 保证慢消费者不 lag。
+    pub speed_tx: watch::Sender<HashMap<String, NodeSpeed>>,
 }
 
 impl AppState {
     pub fn new(cfg: Config, db: PgPool, pki: Arc<Pki>, redis: Option<ConnectionManager>) -> Self {
         let (stats_tx, _) = broadcast::channel(512);
+        let (speed_tx, _) = watch::channel(HashMap::new());
         Self {
             cfg: Arc::new(cfg),
             db,
@@ -90,6 +100,7 @@ impl AppState {
             backup_trigger: Arc::new(Notify::new()),
             setup_tokens: Arc::new(RwLock::new(HashMap::new())),
             stats_tx,
+            speed_tx,
         }
     }
 

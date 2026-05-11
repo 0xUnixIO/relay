@@ -38,7 +38,7 @@ function MiniBar({ value, max, color }: { value: number; max: number; color: str
   );
 }
 
-type Period = "1h" | "24h" | "7d";
+type Period = "1h" | "6h" | "24h" | "7d";
 
 function fmtTs(ts: string, period: Period): string {
   const d = new Date(ts);
@@ -126,10 +126,10 @@ export default function Dashboard() {
               流量趋势
             </h2>
             <div className="flex items-center gap-1">
-              {(["1h", "24h", "7d"] as Period[]).map((p) => (
+              {(["1h", "6h", "24h", "7d"] as Period[]).map((p) => (
                 <Button key={p} size="sm" variant={period === p ? "default" : "ghost"}
                   className="h-6 px-2 text-xs" onClick={() => setPeriod(p)}>
-                  {p === "1h" ? "1 小时" : p === "24h" ? "24 小时" : "7 天"}
+                  {p === "1h" ? "1 小时" : p === "6h" ? "6 小时" : p === "24h" ? "24 小时" : "7 天"}
                 </Button>
               ))}
             </div>

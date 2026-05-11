@@ -2,9 +2,7 @@
 //!
 //! 每条 ForwardStatEvent 的 bytes_in/bytes_out 是节点侧单调递增计数器。
 //! 此处在内存中对齐增量，按 forward_id 累加，周期性 flush 一行至数据库。
-//!
-//! TimescaleDB：通过 retention policy 自动删除 30 天前数据。
-//! 原生 PG：每 24 小时运行一次 DELETE 兜底清理（同样保留 30 天）。
+//! 时序数据的清理统一由 maintenance 模块负责。
 
 use std::collections::HashMap;
 
@@ -32,12 +30,6 @@ async fn run(state: AppState) {
     let mut flush_tick = interval(Duration::from_secs(60));
     flush_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     flush_tick.tick().await; // 跳过第一次立即触发
-
-    // 原生 PG 兜底清理：每 24 小时删一次 30 天前的数据。
-    // TimescaleDB 有 retention policy，此 DELETE 在 hypertable 上幂等无害。
-    let mut cleanup_tick = interval(Duration::from_secs(86400));
-    cleanup_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    cleanup_tick.tick().await;
 
     let mut accum: HashMap<i64, Accum> = HashMap::new();
 
@@ -100,14 +92,6 @@ async fn run(state: AppState) {
                     acc.delta_out  = 0;
                     acc.peak_conns = 0;
                 }
-            }
-
-            _ = cleanup_tick.tick() => {
-                let _ = sqlx::query(
-                    "DELETE FROM forward_stats WHERE ts < now() - INTERVAL '30 days'",
-                )
-                .execute(&state.db)
-                .await;
             }
         }
     }

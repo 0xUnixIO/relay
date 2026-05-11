@@ -106,7 +106,9 @@ pub fn bind_udp_socket(addr: std::net::SocketAddr) -> Result<UdpSocket> {
     Ok(UdpSocket::from_std(std::net::UdpSocket::from(sock))?)
 }
 
-use relay_proto::v1::{ConfigAck, ConfigUpdate, ForwardConfig, ForwardStats, Protocol};
+use relay_proto::v1::{
+    ConfigAck, ConfigUpdate, ForwardConfig, ForwardStats, Protocol, UpstreamProbeSample,
+};
 
 use crate::acl::Acl;
 
@@ -120,6 +122,8 @@ pub struct Engine {
     /// 双协议（TCP+UDP）下两条 listener 拿到同一个桶，合并计费。
     /// 值里附带 bps，spec 改速时可比较是否需要重建。
     rate_limiters: Mutex<HashMap<LimiterKey, (u64, SharedLimiter)>>,
+    /// probe 样本缓冲，由 main.rs 定期排空并通过 gRPC 上报。
+    pub probe_buf: Arc<Mutex<Vec<UpstreamProbeSample>>>,
 }
 
 struct Running {
@@ -279,6 +283,7 @@ impl Engine {
                 cancel.clone(),
                 counters.clone(),
                 limiter,
+                self.probe_buf.clone(),
             )
             .await
             {
@@ -412,6 +417,7 @@ impl Engine {
                 cancel.clone(),
                 counters.clone(),
                 limiter,
+                self.probe_buf.clone(),
             )
             .await
             {
@@ -459,6 +465,7 @@ async fn start_tunnel(
     cancel: CancellationToken,
     counters: Arc<Counters>,
     rate_limiter: Arc<Option<RateLimiter>>,
+    probe_buf: Arc<Mutex<Vec<UpstreamProbeSample>>>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let listen: SocketAddr = spec.listen_addr.parse()?;
 
@@ -472,6 +479,52 @@ async fn start_tunnel(
 
     let upstreams = Arc::new(resolved);
     let cursor = Arc::new(AtomicUsize::new(0));
+
+    // 后台 probe 任务：定期 TCP-connect 所有 upstream，记录延迟写入 probe_buf。
+    {
+        let upstreams = upstreams.clone();
+        let upstream_addrs = spec.upstream_addrs.clone();
+        let forward_id = spec.forward_id.clone();
+        let probe_buf = probe_buf.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // 首次 tick 立即执行
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = interval.tick() => {
+                        for (idx, &upstream) in upstreams.iter().enumerate() {
+                            let t0 = std::time::Instant::now();
+                            let result = tokio::time::timeout(
+                                Duration::from_secs(5),
+                                TcpStream::connect(upstream),
+                            ).await;
+                            let latency_us = match &result {
+                                Ok(Ok(_)) => t0.elapsed().as_micros() as u64,
+                                _ => 0,
+                            };
+                            let addr = upstream_addrs.get(idx)
+                                .cloned()
+                                .unwrap_or_else(|| upstream.to_string());
+                            let sample = UpstreamProbeSample {
+                                forward_id: forward_id.clone(),
+                                upstream_addr: addr,
+                                latency_us,
+                                ts_unix_ms: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as i64)
+                                    .unwrap_or(0),
+                            };
+                            probe_buf.lock().await.push(sample);
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     let handle = match Protocol::try_from(spec.protocol).unwrap_or(Protocol::Tcp) {
         Protocol::Tcp => {

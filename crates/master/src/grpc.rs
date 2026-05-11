@@ -247,6 +247,7 @@ async fn handle_inbound(
     let counter_deltas = state.counter_deltas.clone();
     let registry = state.registry.clone();
     let stats_tx = state.stats_tx.clone();
+    let speed_tx = state.speed_tx.clone();
 
     // 连接建立时一次性加载，5s 的陈旧度可接受
     let node_traffic_ratio: f64 =
@@ -385,6 +386,30 @@ async fn handle_inbound(
                     )
                     .await;
 
+                // 持久化心跳到时序表（fire-and-forget，不阻塞心跳流）
+                {
+                    let db2 = db.clone();
+                    let nid = node_id.clone();
+                    let cpu = hb.cpu_pct;
+                    let mem_used = hb.mem_used_bytes as i64;
+                    let mem_total = hb.mem_total_bytes as i64;
+                    let conns = hb.active_connections as i32;
+                    tokio::spawn(async move {
+                        let _ = sqlx::query(
+                            "INSERT INTO node_heartbeats \
+                             (ts, node_id, cpu_pct, mem_used_bytes, mem_total_bytes, active_connections) \
+                             VALUES (now(), $1, $2, $3, $4, $5)",
+                        )
+                        .bind(nid)
+                        .bind(cpu)
+                        .bind(mem_used)
+                        .bind(mem_total)
+                        .bind(conns)
+                        .execute(&db2)
+                        .await;
+                    });
+                }
+
                 // 5) 升级 job 完成判定：心跳的 agent_version == in-flight job
                 //    的 target_tag（去掉 v 前缀后比较）→ 标 succeeded。
                 if !hb.agent_version.is_empty() {
@@ -425,6 +450,16 @@ async fn handle_inbound(
                     bytes_out: st.bytes_out,
                     active_connections: st.active_connections,
                     ts_unix_ms: now_ms,
+                });
+                let (rx, tx) = series.node_speed(&node_id).await;
+                speed_tx.send_modify(|m| {
+                    m.insert(
+                        node_id.clone(),
+                        crate::state::NodeSpeed {
+                            rx_bps: rx,
+                            tx_bps: tx,
+                        },
+                    );
                 });
                 // Each hop accumulates its own bytes weighted by the node's
                 // traffic_ratio, so multi-hop billing sums A*ratio_A + B*ratio_B.
@@ -602,6 +637,30 @@ async fn handle_inbound(
                 {
                     tracing::warn!(%node_id, error = %e, "renew_cert: outbound channel closed");
                 }
+            }
+            NodePayload::UpstreamProbe(sample) => {
+                // fire-and-forget，忽略写 DB 错误（不影响控制流）
+                let db = db.clone();
+                tokio::spawn(async move {
+                    let latency: Option<i64> = if sample.latency_us > 0 {
+                        Some(sample.latency_us as i64)
+                    } else {
+                        None
+                    };
+                    if let Ok(fid) = sample.forward_id.parse::<i64>() {
+                        let _ = sqlx::query(
+                            "INSERT INTO forward_probe_samples \
+                             (forward_id, upstream_addr, latency_us, probed_at) \
+                             VALUES ($1, $2, $3, to_timestamp($4::double precision / 1000))",
+                        )
+                        .bind(fid)
+                        .bind(&sample.upstream_addr)
+                        .bind(latency)
+                        .bind(sample.ts_unix_ms)
+                        .execute(&db)
+                        .await;
+                    }
+                });
             }
             NodePayload::UpgradeReport(rep) => {
                 tracing::info!(

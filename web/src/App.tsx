@@ -15,7 +15,7 @@ import MePage from "@/pages/Me";
 import RoleHome from "@/components/RoleHome";
 import UserDashboard from "@/pages/UserDashboard";
 import ConfigPage from "@/pages/Config";
-import StatusPage from "@/pages/Status";
+import ProbePage from "@/pages/Probe";
 import { ConfirmProvider } from "@/hooks/useConfirm";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -26,13 +26,13 @@ export default function App() {
       <ConfirmProvider>
       <Toaster position="bottom-right" richColors />
       <Routes>
-        <Route path="/status" element={<StatusPage />} />
         <Route path="/login" element={<Login />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<Layout />}>
             <Route index element={<RoleHome />} />
             <Route path="/me" element={<MePage />} />
             <Route path="/forwards" element={<ForwardsPage />} />
+            <Route path="/probe" element={<ProbePage />} />
             <Route path="/user-home" element={<UserDashboard />} />
             <Route element={<RequireAdmin />}>
               <Route path="/dashboard" element={<Dashboard />} />

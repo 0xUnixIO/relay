@@ -27,14 +27,22 @@ pub fn spawn(db: PgPool) {
 }
 
 async fn run(db: &PgPool) -> sqlx::Result<()> {
-    let deleted =
-        sqlx::query("DELETE FROM node_availability WHERE recorded_at < now() - INTERVAL '90 days'")
-            .execute(db)
-            .await?
-            .rows_affected();
-
-    if deleted > 0 {
-        tracing::info!(deleted, "pruned old node_availability records");
+    // 三张时序表均有 TimescaleDB retention policy（迁移 0004/0006/0007）。
+    // 此 DELETE 在 hypertable 上幂等无害，原生 PG 部署时作为唯一清理机制。
+    for (table, col, interval) in [
+        ("forward_stats", "ts", "30 days"),
+        ("node_heartbeats", "ts", "30 days"),
+        ("node_availability", "recorded_at", "90 days"),
+    ] {
+        let deleted = sqlx::query(&format!(
+            "DELETE FROM {table} WHERE {col} < now() - INTERVAL '{interval}'",
+        ))
+        .execute(db)
+        .await?
+        .rows_affected();
+        if deleted > 0 {
+            tracing::info!(deleted, table, "pruned old time-series records");
+        }
     }
 
     Ok(())

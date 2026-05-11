@@ -48,6 +48,8 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
             "/api/v1/nodes/:id",
             get(get_node).put(update_node).delete(delete_node),
         )
+        .route("/api/v1/nodes/speeds", get(get_all_node_speeds))
+        .route("/api/v1/nodes/speeds/stream", get(node_speeds_stream))
         .route("/api/v1/nodes/:id/series", get(get_node_series))
         .route("/api/v1/nodes/:id/rotate-token", post(rotate_node_token))
         .route("/api/v1/nodes/:id/probe-port", post(probe_node_port))
@@ -153,6 +155,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .route("/api/v1/auth/me/password", post(change_own_password))
         .route("/api/v1/events/forwards", get(forward_stats_stream))
         .route("/api/v1/forwards/:id/stats", get(forward_stats_history))
+        .route("/api/v1/forwards/:id/probe-stats", get(forward_probe_stats))
         .route("/api/v1/stats/traffic", get(global_traffic_stats_handler));
 
     let protected = admin
@@ -1221,11 +1224,72 @@ async fn get_setup(
     }))
 }
 
+async fn get_all_node_speeds(
+    State(s): State<AppState>,
+) -> Json<std::collections::HashMap<String, crate::state::NodeSpeed>> {
+    Json(s.speed_tx.borrow().clone())
+}
+
+async fn node_speeds_stream(
+    State(s): State<AppState>,
+) -> Sse<impl futures_core::Stream<Item = Result<Event, Infallible>>> {
+    use tokio_stream::wrappers::WatchStream;
+
+    let rx = s.speed_tx.subscribe();
+    let stream = WatchStream::new(rx).map(|snapshot| {
+        Ok::<_, Infallible>(match serde_json::to_string(&snapshot) {
+            Ok(j) => Event::default().data(j),
+            Err(_) => Event::default().comment("serialize error"),
+        })
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
 async fn get_node_series(
     State(s): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<crate::series::NodeSeries>> {
-    Ok(Json(s.series.series(&id).await))
+    #[derive(sqlx::FromRow)]
+    struct HbRow {
+        ts_ms: i64,
+        cpu_pct: f64,
+        mem_used_bytes: i64,
+        mem_total_bytes: i64,
+        active_connections: i32,
+    }
+
+    let rows: Vec<HbRow> = sqlx::query_as(
+        "SELECT EXTRACT(EPOCH FROM ts)::BIGINT * 1000 AS ts_ms,
+                cpu_pct, mem_used_bytes, mem_total_bytes, active_connections
+           FROM node_heartbeats
+          WHERE node_id = $1
+          ORDER BY ts DESC
+          LIMIT 120",
+    )
+    .bind(&id)
+    .fetch_all(&s.db)
+    .await
+    .unwrap_or_default();
+
+    let mut heartbeats: Vec<crate::series::HeartbeatSample> = rows
+        .into_iter()
+        .map(|r| crate::series::HeartbeatSample {
+            ts_unix_ms: r.ts_ms,
+            cpu_pct: r.cpu_pct,
+            mem_used_bytes: r.mem_used_bytes as u64,
+            mem_total_bytes: r.mem_total_bytes as u64,
+            active_connections: r.active_connections as u32,
+        })
+        .collect();
+    heartbeats.reverse(); // DESC 查出来倒序，翻转为时间正序
+
+    let tunnels = s.series.tunnel_series(&id).await;
+
+    Ok(Json(crate::series::NodeSeries {
+        heartbeats,
+        tunnels,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -3550,6 +3614,7 @@ async fn forward_stats_history(
     let (bucket_secs, since) = match q.period.as_deref() {
         Some("7d") => (3600_f64, "7 days"),
         Some("24h") => (300_f64, "24 hours"),
+        Some("6h") => (120_f64, "6 hours"),
         _ => (60_f64, "1 hour"),
     };
 
@@ -3593,6 +3658,7 @@ async fn global_traffic_stats_handler(
     let (bucket_secs, since) = match q.period.as_deref() {
         Some("7d") => (3600_f64, "7 days"),
         Some("24h") => (300_f64, "24 hours"),
+        Some("6h") => (120_f64, "6 hours"),
         _ => (60_f64, "1 hour"),
     };
 
@@ -3625,6 +3691,60 @@ async fn global_traffic_stats_handler(
         .collect();
 
     Ok(Json(buckets))
+}
+
+// ── Upstream probe 延迟统计 ────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct UpstreamProbeStats {
+    upstream_addr: String,
+    sample_count: i64,
+    avg_latency_us: Option<f64>,
+    /// 标准差（抖动）
+    jitter_us: Option<f64>,
+    /// 丢包率 0.0–1.0
+    loss_rate: f64,
+    last_probed_at: Option<DateTime<Utc>>,
+}
+
+async fn forward_probe_stats(
+    State(s): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<Vec<UpstreamProbeStats>>> {
+    let rows = sqlx::query(
+        "SELECT
+             upstream_addr,
+             COUNT(*)                                                        AS sample_count,
+             AVG(latency_us)  FILTER (WHERE latency_us IS NOT NULL)         AS avg_latency_us,
+             STDDEV(latency_us) FILTER (WHERE latency_us IS NOT NULL)       AS jitter_us,
+             1.0 - COUNT(*) FILTER (WHERE latency_us IS NOT NULL)::float8
+                   / NULLIF(COUNT(*), 0)                                     AS loss_rate,
+             MAX(probed_at)                                                  AS last_probed_at
+         FROM forward_probe_samples
+         WHERE forward_id = $1
+           AND probed_at > NOW() - INTERVAL '24 hours'
+         GROUP BY upstream_addr
+         ORDER BY upstream_addr",
+    )
+    .bind(id)
+    .fetch_all(&s.db)
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    use sqlx::Row;
+    let stats: Vec<UpstreamProbeStats> = rows
+        .iter()
+        .map(|r| UpstreamProbeStats {
+            upstream_addr: r.get("upstream_addr"),
+            sample_count: r.get("sample_count"),
+            avg_latency_us: r.get("avg_latency_us"),
+            jitter_us: r.get("jitter_us"),
+            loss_rate: r.get::<Option<f64>, _>("loss_rate").unwrap_or(0.0),
+            last_probed_at: r.get("last_probed_at"),
+        })
+        .collect();
+
+    Ok(Json(stats))
 }
 
 async fn public_status_stream(

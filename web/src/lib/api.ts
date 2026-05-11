@@ -293,6 +293,11 @@ export interface ProbePortResponse {
   error: string;
 }
 
+export interface NodeSpeed {
+  rx_bps: number;
+  tx_bps: number;
+}
+
 export const Api = {
   // auth
   authStatus: () => api<{ bootstrapped: boolean }>("/api/v1/auth/status"),
@@ -326,6 +331,7 @@ export const Api = {
   listNodes: () => api<NodeInfo[]>("/api/v1/nodes"),
   getNode: (id: string) => api<NodeInfo>(`/api/v1/nodes/${id}`),
   getNodeSeries: (id: string) => api<NodeSeries>(`/api/v1/nodes/${id}/series`),
+  getNodeSpeeds: () => api<Record<string, NodeSpeed>>("/api/v1/nodes/speeds"),
   createNode: (payload: {
     id?: string;
     hostname?: string;
@@ -519,11 +525,14 @@ export const Api = {
   applyGroupTunnels: (id: string) =>
     api<ApplyGroupResult>(`/api/v1/user-groups/${id}/apply`, { method: "POST" }),
 
-  getForwardStats: (id: string, period: "1h" | "24h" | "7d" = "1h") =>
+  getForwardStats: (id: string, period: "1h" | "6h" | "24h" | "7d" = "1h") =>
     api<ForwardStatBucket[]>(`/api/v1/forwards/${id}/stats?period=${period}`),
 
-  getGlobalTrafficStats: (period: "1h" | "24h" | "7d" = "1h") =>
+  getGlobalTrafficStats: (period: "1h" | "6h" | "24h" | "7d" = "1h") =>
     api<ForwardStatBucket[]>(`/api/v1/stats/traffic?period=${period}`),
+
+  getForwardProbeStats: (id: string) =>
+    api<UpstreamProbeStats[]>(`/api/v1/forwards/${id}/probe-stats`),
 };
 
 export interface SystemConfig {
@@ -708,4 +717,15 @@ export interface ForwardStatBucket {
   bytes_in:   number;
   bytes_out:  number;
   peak_conns: number;
+}
+
+// ---------- Forward Probe Stats ----------
+
+export interface UpstreamProbeStats {
+  upstream_addr: string;
+  sample_count: number;
+  avg_latency_us: number | null;
+  jitter_us: number | null;
+  loss_rate: number;
+  last_probed_at: string | null;
 }

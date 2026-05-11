@@ -14,7 +14,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Api, type NodeInfo, ApiError } from "@/lib/api";
+import { Api, type NodeInfo, type NodeSpeed, ApiError } from "@/lib/api";
+import { useNodeSpeeds } from "@/hooks/useNodeSpeeds";
 import { useSetupLink } from "@/hooks/useSetupLink";
 import { ShellCmd } from "@/components/ShellCmd";
 
@@ -71,12 +72,18 @@ function MetricRow({ icon, label, value, pct, barColor }: MetricRowProps) {
   );
 }
 
+function fmtSpeed(bps: number): string {
+  return `${fmtBytes(bps)}/s`;
+}
+
 function NodeCard({
   node,
   stats,
+  speed,
 }: {
   node: NodeInfo;
   stats: NodeStats | undefined;
+  speed: NodeSpeed | undefined;
 }) {
   const navigate = useNavigate();
   const online = isOnline(node);
@@ -147,6 +154,15 @@ function NodeCard({
             {stats ? `↓ ${fmtBytes(stats.bytesIn)} · ↑ ${fmtBytes(stats.bytesOut)}` : "—"}
           </span>
         </div>
+        <div className="flex items-center gap-1.5 text-sm">
+          <Network className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+          <span className="text-muted-foreground">实时网速</span>
+          <span className="ml-auto tabular-nums text-foreground">
+            {speed
+              ? `↓ ${fmtSpeed(speed.rx_bps)} · ↑ ${fmtSpeed(speed.tx_bps)}`
+              : online ? "—" : <span className="text-muted-foreground/50">离线</span>}
+          </span>
+        </div>
       </div>
 
       <div className="border-t pt-3">
@@ -162,6 +178,7 @@ export default function NodesPage() {
   });
   const { data: serverInfo } = useSWR("server-info", Api.serverInfo);
   const { data: allForwards = [] } = useSWR("forwards", Api.listForwards);
+  const nodeSpeeds = useNodeSpeeds();
 
   const nodeStats = useMemo<Record<string, NodeStats>>(() => {
     const map: Record<string, NodeStats> = {};
@@ -386,6 +403,7 @@ export default function NodesPage() {
               key={n.id}
               node={n}
               stats={nodeStats[n.id]}
+              speed={nodeSpeeds[n.id]}
             />
           ))}
         </div>

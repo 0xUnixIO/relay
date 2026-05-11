@@ -222,6 +222,31 @@ async fn run_session(
         }
     });
 
+    // Periodic upstream probe sample reporter.
+    let probe_tx = tx.clone();
+    let probe_engine = engine.clone();
+    let probe_handle = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            let samples = {
+                let mut buf = probe_engine.probe_buf.lock().await;
+                std::mem::take(&mut *buf)
+            };
+            for sample in samples {
+                let msg = NodeMessage {
+                    payload: Some(relay_proto::v1::node_message::Payload::UpstreamProbe(
+                        sample,
+                    )),
+                };
+                if probe_tx.send(msg).await.is_err() {
+                    return;
+                }
+            }
+        }
+    });
+
     let result: Result<SessionExit> = async {
         loop {
             tokio::select! {
@@ -291,6 +316,7 @@ async fn run_session(
     hb_handle.abort();
     stats_handle.abort();
     dns_handle.abort();
+    probe_handle.abort();
     *cert_session.outbound.lock().await = None;
     result
 }

@@ -3,10 +3,9 @@ import { useForwardStats } from "@/hooks/useForwardStats";
 import { useConfirm } from "@/hooks/useConfirm";
 import useSWR from "swr";
 import {
-  Plus, Pencil, Trash2, Pause, Play, RefreshCw, Activity, Shuffle, Check, Network, MoreHorizontal, BarChart2,
+  Plus, Pencil, Trash2, Pause, Play, RefreshCw, Activity, Shuffle, Check, Network, MoreHorizontal, BarChart2, LineChart,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,6 +37,13 @@ function fmtBytes(n: number): string {
   return `${v.toFixed(v < 10 ? 1 : 0)} ${u[i]}`;
 }
 
+const LB_LABELS: Record<string, string> = {
+  round_robin: "轮询",
+  random: "随机",
+  least_latency: "最低延迟",
+  primary_backup: "主备",
+};
+
 function parseUpstreamAddrs(text: string): string[] | string {
   const lines = text.split(/[\n,]/).map((l) => l.trim()).filter(Boolean);
   if (lines.length === 0) return "上游地址不能为空";
@@ -55,6 +61,7 @@ type Form = {
   name: string;
   in_port: string;
   remote_addrs: string;
+  lb_strategy: string;
 };
 
 const emptyForm = (): Form => ({
@@ -62,6 +69,7 @@ const emptyForm = (): Form => ({
   name: "",
   in_port: "",
   remote_addrs: "",
+  lb_strategy: "round_robin",
 });
 
 type ProbeState =
@@ -96,6 +104,7 @@ export default function ForwardsPage() {
     hops: import("@/lib/api").ForwardProbeHop[];
   } | null>(null);
   const [statsTarget, setStatsTarget] = useState<Forward | null>(null);
+  const [probeStatsTarget, setProbeStatsTarget] = useState<Forward | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
   const copy = (key: string, text: string) => {
@@ -186,6 +195,7 @@ export default function ForwardsPage() {
       name: f.name,
       in_port: String(f.in_port ?? ""),
       remote_addrs: (f.remote_addrs ?? []).join("\n"),
+      lb_strategy: f.lb_strategy || "round_robin",
     });
     setHostProbe({ status: "idle" });
     setOpen(true);
@@ -204,6 +214,7 @@ export default function ForwardsPage() {
           name: form.name,
           in_port: inPort,
           remote_addrs: parsed,
+          lb_strategy: form.lb_strategy || undefined,
         });
       } else {
         if (!form.tunnel_id) { toast.error("请选择隧道"); setSaving(false); return; }
@@ -212,6 +223,7 @@ export default function ForwardsPage() {
           name: form.name,
           in_port: inPort,
           remote_addrs: parsed,
+          lb_strategy: form.lb_strategy || undefined,
         });
         if (created.port_warnings?.length) {
           for (const w of created.port_warnings) toast.warning(w);
@@ -269,8 +281,6 @@ export default function ForwardsPage() {
     }
   };
 
-  const colSpan = 8;
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -288,182 +298,203 @@ export default function ForwardsPage() {
         </Card>
       )}
 
+      {/* overflow-x-auto 防止窄屏下表格撑破页面布局 */}
       <Card>
-        <CardContent className="p-0">
-          <ScrollArea>
-            <Table className="min-w-[720px] table-fixed">
-              <colgroup>
-                <col style={{ width: "6rem" }} />
-                <col style={{ width: "5rem" }} />
-                <col style={{ width: "9rem" }} />
-                <col />
-                <col style={{ width: "5rem" }} />
-                <col style={{ width: "6rem" }} />
-                <col style={{ width: "6rem" }} />
-                <col style={{ width: "8rem" }} />
-              </colgroup>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>名称</TableHead>
-                  <TableHead>隧道</TableHead>
-                  <TableHead>入口</TableHead>
-                  <TableHead>上游</TableHead>
-                  <TableHead className="text-right">下载</TableHead>
-                  <TableHead className="text-right">上传</TableHead>
-                  <TableHead className="text-right whitespace-nowrap">活跃连接</TableHead>
-                  <TableHead className="text-right">操作</TableHead>
+        <CardContent className="p-0 overflow-x-auto">
+          <Table className="w-full">
+            <TableHeader>
+              <TableRow>
+                <TableHead>名称</TableHead>
+                <TableHead className="w-[9rem]">入口</TableHead>
+                {/* 上游/下载/上传/活跃连接列在移动端隐藏，优先保证名称和操作可见 */}
+                <TableHead className="hidden sm:table-cell w-[12rem]">上游</TableHead>
+                <TableHead className="hidden sm:table-cell w-px whitespace-nowrap text-right">下载</TableHead>
+                <TableHead className="hidden sm:table-cell w-px whitespace-nowrap text-right">上传</TableHead>
+                <TableHead className="hidden sm:table-cell w-px whitespace-nowrap text-right">活跃连接</TableHead>
+                <TableHead className="w-px whitespace-nowrap text-right">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {forwards.length === 0 ? (
+                <TableRow className="hover:bg-transparent even:bg-transparent">
+                  {/* 移动端 3 列（名称、入口、操作），sm 以上 7 列 */}
+                  <TableCell colSpan={3} className="text-center sm:hidden">
+                    <EmptyState icon={Network} title="暂无转发" description="点击右上角「新建转发」按钮创建。" compact />
+                  </TableCell>
+                  <TableCell colSpan={7} className="text-center hidden sm:table-cell">
+                    <EmptyState icon={Network} title="暂无转发" description="点击右上角「新建转发」按钮创建。" compact />
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {forwards.length === 0 ? (
-                  <TableRow className="hover:bg-transparent even:bg-transparent">
-                    <TableCell colSpan={colSpan} className="text-center">
-                      <EmptyState icon={Network} title="暂无转发" description="点击右上角「新建转发」按钮创建。" compact />
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  [...forwards].sort((a, b) => Number(b.effective_enabled) - Number(a.effective_enabled)).map((f) => {
-                    const hasDeployError = f.pause_reasons.includes("deploy_failed");
-                    const rowCls = f.effective_enabled
-                      ? ""
-                      : hasDeployError
-                        ? "!bg-amber-100 dark:!bg-amber-900/50 text-muted-foreground"
-                        : "!bg-gray-200 dark:!bg-gray-700/60 text-muted-foreground";
-                    return (
-                      <TableRow key={f.id} className={rowCls}>
-                        <TableCell className="font-medium truncate">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span className="truncate block w-full">{f.name}</span>
-                            </TooltipTrigger>
-                            <TooltipContent>{f.name}</TooltipContent>
-                          </Tooltip>
-                        </TableCell>
-                        <TableCell className="text-xs truncate">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span className="truncate block w-full">{f.tunnel_name}</span>
-                            </TooltipTrigger>
-                            <TooltipContent>{f.tunnel_name}</TooltipContent>
-                          </Tooltip>
-                        </TableCell>
-                        <TableCell className="font-mono text-xs text-muted-foreground">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span
-                                className="inline-flex items-center gap-1 min-w-0 max-w-full cursor-pointer hover:text-foreground"
-                                onClick={() => copy(
-                                  `${f.id}-port`,
-                                  f.entry_addrs && f.entry_addrs.length > 1
-                                    ? f.entry_addrs.join("\n")
-                                    : f.entry_addr ?? String(f.in_port),
-                                )}
-                              >
-                                <span className="truncate">{f.entry_addr ?? String(f.in_port)}</span>
-                                {f.entry_addrs && f.entry_addrs.length > 1 && (
-                                  <Badge variant="secondary" className="shrink-0">×{f.entry_addrs.length}</Badge>
-                                )}
-                                {copied === `${f.id}-port` && <Check className="h-3 w-3 text-emerald-500 shrink-0" />}
-                              </span>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {f.entry_addrs && f.entry_addrs.length > 1
-                                ? f.entry_addrs.join(" / ")
-                                : (f.entry_addr ?? String(f.in_port))}
-                            </TooltipContent>
-                          </Tooltip>
-                        </TableCell>
-                        <TableCell className="font-mono text-xs text-muted-foreground">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span
-                                className="inline-flex items-center gap-1 min-w-0 max-w-full cursor-pointer hover:text-foreground"
-                                onClick={() => copy(`${f.id}-upstream`, f.remote_addrs.join("\n"))}
-                              >
-                                <span className="truncate min-w-0">{f.remote_addrs.slice(0, 1).join(", ")}</span>
-                                {f.remote_addrs.length > 1 && (
+              ) : (
+                [...forwards].sort((a, b) => Number(b.effective_enabled) - Number(a.effective_enabled)).map((f) => {
+                  const hasDeployError = f.pause_reasons.includes("deploy_failed");
+                  const rowCls = f.effective_enabled
+                    ? ""
+                    : hasDeployError
+                      ? "!bg-amber-100 dark:!bg-amber-900/50 text-muted-foreground"
+                      : "!bg-gray-200 dark:!bg-gray-700/60 text-muted-foreground";
+                  return (
+                    <TableRow key={f.id} className={rowCls}>
+                      <TableCell className="min-w-0">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div>
+                              <div className="font-medium truncate">{f.name}</div>
+                              <div className="text-xs text-muted-foreground truncate">{f.tunnel_name}</div>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent>{f.name} · {f.tunnel_name}</TooltipContent>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span
+                              className="inline-flex items-center gap-1 min-w-0 max-w-full cursor-pointer hover:text-foreground"
+                              onClick={() => copy(
+                                `${f.id}-port`,
+                                f.entry_addrs && f.entry_addrs.length > 1
+                                  ? f.entry_addrs.join("\n")
+                                  : f.entry_addr ?? String(f.in_port),
+                              )}
+                            >
+                              <span className="truncate">{f.entry_addr ?? String(f.in_port)}</span>
+                              {f.entry_addrs && f.entry_addrs.length > 1 && (
+                                <Badge variant="secondary" className="shrink-0">×{f.entry_addrs.length}</Badge>
+                              )}
+                              <Check className={`h-3 w-3 shrink-0 ${copied === `${f.id}-port` ? "text-emerald-500" : "invisible"}`} />
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {f.entry_addrs && f.entry_addrs.length > 1
+                              ? f.entry_addrs.join(" / ")
+                              : (f.entry_addr ?? String(f.in_port))}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TableCell>
+                      {/* 上游列 — 移动端隐藏 */}
+                      <TableCell className="hidden sm:table-cell font-mono text-xs text-muted-foreground">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span
+                              className="inline-flex items-center gap-1 min-w-0 max-w-full cursor-pointer hover:text-foreground"
+                              onClick={() => copy(`${f.id}-upstream`, f.remote_addrs.join("\n"))}
+                            >
+                              <span className="truncate min-w-0">{f.remote_addrs.slice(0, 1).join(", ")}</span>
+                              {f.remote_addrs.length > 1 && (
+                                <>
                                   <Badge variant="secondary" className="shrink-0">+{f.remote_addrs.length - 1}</Badge>
-                                )}
-                                {copied === `${f.id}-upstream` && <Check className="h-3 w-3 text-emerald-500 shrink-0" />}
-                              </span>
+                                  <span className="shrink-0 text-muted-foreground">
+                                    {LB_LABELS[f.lb_strategy] ?? f.lb_strategy}
+                                  </span>
+                                </>
+                              )}
+                              <Check className={`h-3 w-3 shrink-0 ${copied === `${f.id}-upstream` ? "text-emerald-500" : "invisible"}`} />
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <div className="font-mono text-xs">
+                              {f.remote_addrs.map((a, i) => <div key={i}>{a}</div>)}
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TableCell>
+                      {/* 下载列 — 移动端隐藏 */}
+                      <TableCell className="hidden sm:table-cell text-right font-mono text-xs whitespace-nowrap">
+                        <div>{fmtBytes(f.in_flow_bytes)}</div>
+                        {rates.get(f.id)?.inRate != null && rates.get(f.id)!.inRate > 0 && (
+                          <div className="text-emerald-500">{fmtBytes(rates.get(f.id)!.inRate)}/s</div>
+                        )}
+                      </TableCell>
+                      {/* 上传列 — 移动端隐藏 */}
+                      <TableCell className="hidden sm:table-cell text-right font-mono text-xs whitespace-nowrap">
+                        <div>{fmtBytes(f.out_flow_bytes)}</div>
+                        {rates.get(f.id)?.outRate != null && rates.get(f.id)!.outRate > 0 && (
+                          <div className="text-sky-500">{fmtBytes(rates.get(f.id)!.outRate)}/s</div>
+                        )}
+                      </TableCell>
+                      {/* 活跃连接列 — 移动端隐藏 */}
+                      <TableCell className="hidden sm:table-cell text-right font-mono text-xs whitespace-nowrap">{f.active_connections}</TableCell>
+                      {/* 操作列：移动端只显示 DropdownMenu（探测和编辑合并入菜单），sm 以上保持三按钮并排 */}
+                      <TableCell className="whitespace-nowrap text-right">
+                        <div className="inline-flex items-center gap-1">
+                          {/* 探测按钮 — 仅 sm 以上显示 */}
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="hidden sm:inline-flex"
+                                onClick={() => probe(f)}
+                                disabled={!!probing[f.id]}
+                              >
+                                <Activity className={`h-4 w-4 ${probing[f.id] ? "animate-pulse" : ""}`} />
+                              </Button>
                             </TooltipTrigger>
-                            <TooltipContent>
-                              {f.remote_addrs.join(" / ")}
-                            </TooltipContent>
+                            <TooltipContent>探测上游延迟</TooltipContent>
                           </Tooltip>
-                        </TableCell>
-                        <TableCell className="text-right font-mono text-xs whitespace-nowrap">
-                          <div>{fmtBytes(f.in_flow_bytes)}</div>
-                          {rates.get(f.id)?.inRate != null && rates.get(f.id)!.inRate > 0 && (
-                            <div className="text-emerald-500">{fmtBytes(rates.get(f.id)!.inRate)}/s</div>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right font-mono text-xs whitespace-nowrap">
-                          <div>{fmtBytes(f.out_flow_bytes)}</div>
-                          {rates.get(f.id)?.outRate != null && rates.get(f.id)!.outRate > 0 && (
-                            <div className="text-sky-500">{fmtBytes(rates.get(f.id)!.outRate)}/s</div>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right font-mono text-xs whitespace-nowrap">{f.active_connections}</TableCell>
-                        <TableCell className="whitespace-nowrap text-right">
-                          <div className="inline-flex items-center gap-1">
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button size="icon" variant="ghost" onClick={() => setStatsTarget(f)}>
-                                  <BarChart2 className="h-4 w-4" />
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>流量趋势</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button size="icon" variant="ghost" onClick={() => probe(f)} disabled={!!probing[f.id]}>
-                                  <Activity className={`h-4 w-4 ${probing[f.id] ? "animate-pulse" : ""}`} />
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>探测上游延迟</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button size="icon" variant="ghost" onClick={() => openEdit(f)}>
-                                  <Pencil className="h-4 w-4" />
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>编辑</TooltipContent>
-                            </Tooltip>
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button size="icon" variant="ghost">
-                                  <MoreHorizontal className="h-4 w-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem onClick={() => toggle(f)}>
-                                  {f.desired_enabled
-                                    ? <><Pause className="h-4 w-4 mr-2" />暂停</>
-                                    : <><Play className="h-4 w-4 mr-2" />恢复</>}
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => redeploy(f)}>
-                                  <RefreshCw className="h-4 w-4 mr-2" />重新部署
-                                </DropdownMenuItem>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  className="text-destructive focus:text-destructive"
-                                  onClick={() => remove(f)}
-                                >
-                                  <Trash2 className="h-4 w-4 mr-2" />删除
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
-                )}
-              </TableBody>
-            </Table>
-          </ScrollArea>
+                          {/* 编辑按钮 — 仅 sm 以上显示 */}
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="hidden sm:inline-flex"
+                                onClick={() => openEdit(f)}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>编辑</TooltipContent>
+                          </Tooltip>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button size="icon" variant="ghost">
+                                <MoreHorizontal className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              {/* 移动端额外提供探测和编辑入口 */}
+                              <DropdownMenuItem className="sm:hidden" onClick={() => probe(f)} disabled={!!probing[f.id]}>
+                                <Activity className={`h-4 w-4 mr-2 ${probing[f.id] ? "animate-pulse" : ""}`} />
+                                {probing[f.id] ? "探测中…" : "探测延迟"}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem className="sm:hidden" onClick={() => openEdit(f)}>
+                                <Pencil className="h-4 w-4 mr-2" />编辑
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator className="sm:hidden" />
+                              <DropdownMenuItem onClick={() => setStatsTarget(f)}>
+                                <BarChart2 className="h-4 w-4 mr-2" />流量趋势
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => setProbeStatsTarget(f)}>
+                                <LineChart className="h-4 w-4 mr-2" />延迟统计
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => toggle(f)}>
+                                {f.desired_enabled
+                                  ? <><Pause className="h-4 w-4 mr-2" />暂停</>
+                                  : <><Play className="h-4 w-4 mr-2" />恢复</>}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => redeploy(f)}>
+                                <RefreshCw className="h-4 w-4 mr-2" />重新部署
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                className="text-destructive focus:text-destructive"
+                                onClick={() => remove(f)}
+                              >
+                                <Trash2 className="h-4 w-4 mr-2" />删除
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
 
@@ -558,6 +589,24 @@ export default function ForwardsPage() {
                 placeholder="example.com:8080"
               />
             </div>
+            {form.remote_addrs.trim().includes("\n") && (
+              <div className="space-y-1.5">
+                <Label>负载均衡策略</Label>
+                <Select
+                  value={form.lb_strategy}
+                  onValueChange={(v) => setForm({ ...form, lb_strategy: v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="round_robin">轮询</SelectItem>
+                    <SelectItem value="random">随机</SelectItem>
+                    <SelectItem value="least_latency">最低延迟</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
 
           <DialogFooter>
@@ -583,6 +632,23 @@ export default function ForwardsPage() {
           {statsTarget && <ForwardStatsChart forwardId={statsTarget.id} />}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setStatsTarget(null)}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 上游延迟统计 */}
+      <Dialog open={!!probeStatsTarget} onOpenChange={(v) => !v && setProbeStatsTarget(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <LineChart className="h-4 w-4" />
+              上游延迟统计 · {probeStatsTarget?.name}
+            </DialogTitle>
+            <DialogDescription>最近 24 小时，每 5 分钟探测一次</DialogDescription>
+          </DialogHeader>
+          {probeStatsTarget && <UpstreamProbeStatsPanel forwardId={probeStatsTarget.id} />}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setProbeStatsTarget(null)}>关闭</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -633,148 +699,7 @@ export default function ForwardsPage() {
   );
 }
 
-// ── 延迟探测拓扑图 ─────────────────────────────────────────────────────────────
-
-import type { ForwardProbeHop } from "@/lib/api";
-
-function ProbeTopology({ hops }: { hops: ForwardProbeHop[] }) {
-  const NODE_W = 72, NODE_H = 28, H_GAP = 100, V_GAP = 44, PAD = 16;
-
-  // 构建节点 label map
-  const labels = new Map<string, string>();
-  for (const h of hops) {
-    labels.set(h.from_node, h.from_node_name || h.from_node.slice(0, 8));
-    const toId = h.to_node || h.target;
-    if (toId) {
-      const toLabel = h.to_node_name || (h.target ? h.target.split(":")[0].slice(0, 14) : toId.slice(0, 14));
-      labels.set(toId, toLabel);
-    }
-  }
-
-  // 构建边
-  const edges = hops.flatMap((h) => {
-    const toId = h.to_node || h.target;
-    return toId ? [{ from: h.from_node, to: toId, us: h.latency_us, ok: h.ok }] : [];
-  });
-
-  // 拓扑排序分层（BFS）
-  const inDegree = new Map<string, number>();
-  const adj = new Map<string, string[]>();
-  for (const e of edges) {
-    inDegree.set(e.to, (inDegree.get(e.to) ?? 0) + 1);
-    const list = adj.get(e.from) ?? [];
-    list.push(e.to);
-    adj.set(e.from, list);
-  }
-  const layerOf = new Map<string, number>();
-  const q = [...labels.keys()].filter((n) => !(inDegree.get(n) ?? 0));
-  q.forEach((n) => layerOf.set(n, 0));
-  for (let i = 0; i < q.length; i++) {
-    const n = q[i];
-    for (const next of adj.get(n) ?? []) {
-      const l = Math.max(layerOf.get(next) ?? 0, (layerOf.get(n) ?? 0) + 1);
-      layerOf.set(next, l);
-      if (!q.includes(next)) q.push(next);
-    }
-  }
-
-  // 按层分组
-  const layers = new Map<number, string[]>();
-  for (const [id, l] of layerOf) {
-    const arr = layers.get(l) ?? [];
-    arr.push(id);
-    layers.set(l, arr);
-  }
-  const numLayers = Math.max(...layerOf.values()) + 1;
-  const maxPerLayer = Math.max(...[...layers.values()].map((a) => a.length));
-
-  const svgW = PAD * 2 + numLayers * NODE_W + (numLayers - 1) * H_GAP;
-  const svgH = PAD * 2 + maxPerLayer * NODE_H + (maxPerLayer - 1) * V_GAP;
-
-  // 节点坐标
-  const pos = new Map<string, { x: number; y: number }>();
-  for (const [l, nodes] of layers) {
-    const x = PAD + l * (NODE_W + H_GAP);
-    const totalH = nodes.length * NODE_H + (nodes.length - 1) * V_GAP;
-    const startY = PAD + (svgH - PAD * 2 - totalH) / 2;
-    nodes.forEach((id, i) => pos.set(id, { x, y: startY + i * (NODE_H + V_GAP) }));
-  }
-
-  const latColor = (us: number) => {
-    const ms = us / 1000;
-    return ms < 80 ? "#059669" : ms < 200 ? "#d97706" : "#e11d48";
-  };
-
-  // 合计（并行取最大，串行求和）
-  const allOk = hops.every((h) => h.ok);
-  const byTo = new Map<string, number>();
-  for (const h of hops) {
-    if (!h.ok) continue;
-    const key = h.to_node || h.target || h.from_node;
-    byTo.set(key, Math.max(byTo.get(key) ?? 0, h.latency_us));
-  }
-  const total = Array.from(byTo.values()).reduce((s, v) => s + v, 0);
-  const totalColor = total / 1000 < 80 ? "#059669" : total / 1000 < 200 ? "#d97706" : "#e11d48";
-
-  return (
-    <div className="space-y-2">
-      <svg
-        viewBox={`0 0 ${svgW} ${svgH}`}
-        width={svgW}
-        height={svgH}
-        className="mx-auto overflow-visible"
-        style={{ maxWidth: "100%" }}
-      >
-        {edges.map((e, i) => {
-          const f = pos.get(e.from), t = pos.get(e.to);
-          if (!f || !t) return null;
-          const x1 = f.x + NODE_W, y1 = f.y + NODE_H / 2;
-          const x2 = t.x, y2 = t.y + NODE_H / 2;
-          const mx = (x1 + x2) / 2;
-          const color = e.ok ? latColor(e.us) : "#e11d48";
-          const midY = (y1 + y2) / 2;
-          return (
-            <g key={i}>
-              <path
-                d={`M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`}
-                fill="none" stroke={color} strokeWidth={1.5} opacity={0.8}
-                strokeDasharray={e.ok ? undefined : "4 2"}
-              />
-              <text
-                x={mx} y={midY - 4}
-                textAnchor="middle" fontSize={9} fill={color}
-                fontFamily="ui-monospace,monospace" fontWeight={600}
-              >
-                {e.ok ? `${(e.us / 1000).toFixed(1)}ms` : "✗"}
-              </text>
-            </g>
-          );
-        })}
-        {[...pos.entries()].map(([id, { x, y }]) => (
-          <g key={id}>
-            <rect x={x} y={y} width={NODE_W} height={NODE_H} rx={6}
-              fill="hsl(var(--muted))" stroke="hsl(var(--border))" strokeWidth={1} />
-            <text
-              x={x + NODE_W / 2} y={y + NODE_H / 2 + 4}
-              textAnchor="middle" fontSize={11} fontWeight={500}
-              fill="hsl(var(--foreground))"
-            >
-              {(labels.get(id) ?? id).slice(0, 10)}
-            </text>
-          </g>
-        ))}
-      </svg>
-      {allOk && hops.length > 0 && (
-        <div className="flex items-center justify-between border-t pt-2 text-sm">
-          <span className="text-muted-foreground">合计</span>
-          <span className="font-mono tabular-nums font-semibold" style={{ color: totalColor }}>
-            {(total / 1000).toFixed(1)} ms
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
+import { ProbeTopology } from "@/components/ProbeTopology";
 
 // ── 流量趋势图表 ──────────────────────────────────────────────────────────────
 
@@ -859,6 +784,72 @@ function ForwardStatsChart({ forwardId }: { forwardId: string }) {
           </AreaChart>
         </ResponsiveContainer>
       )}
+    </div>
+  );
+}
+
+// ── 上游延迟统计面板 ──────────────────────────────────────────────────────────
+
+function UpstreamProbeStatsPanel({ forwardId }: { forwardId: string }) {
+  const { data, isLoading } = useSWR(
+    `forward-probe-stats-${forwardId}`,
+    () => Api.getForwardProbeStats(forwardId),
+    { refreshInterval: 60_000 },
+  );
+
+  const fmtLatency = (us: number | null) =>
+    us == null ? "—" : us < 1000 ? `${us} µs` : `${(us / 1000).toFixed(1)} ms`;
+
+  const latColor = (us: number | null) => {
+    if (us == null) return "";
+    const ms = us / 1000;
+    return ms < 80 ? "text-emerald-500" : ms < 200 ? "text-amber-500" : "text-rose-500";
+  };
+
+  if (isLoading) {
+    return <div className="py-8 text-center text-sm text-muted-foreground">加载中…</div>;
+  }
+  if (!data || data.length === 0) {
+    return (
+      <div className="py-8 text-center text-sm text-muted-foreground">
+        暂无探测数据，等待首次探测（约 5 分钟）
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {data.map((s) => (
+        <div key={s.upstream_addr} className="rounded-lg border p-3 space-y-2">
+          <div className="font-mono text-xs text-muted-foreground">{s.upstream_addr}</div>
+          <div className="grid grid-cols-3 gap-3 text-sm">
+            <div>
+              <div className="text-xs text-muted-foreground mb-0.5">平均延迟</div>
+              <div className={`font-semibold tabular-nums ${latColor(s.avg_latency_us)}`}>
+                {fmtLatency(s.avg_latency_us)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground mb-0.5">抖动</div>
+              <div className="font-semibold tabular-nums">
+                {fmtLatency(s.jitter_us)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground mb-0.5">丢包率</div>
+              <div className={`font-semibold tabular-nums ${s.loss_rate > 0.1 ? "text-rose-500" : s.loss_rate > 0 ? "text-amber-500" : "text-emerald-500"}`}>
+                {(s.loss_rate * 100).toFixed(1)}%
+              </div>
+            </div>
+          </div>
+          <div className="text-xs text-muted-foreground">
+            共 {s.sample_count} 次探测
+            {s.last_probed_at && (
+              <> · 最近 {new Date(s.last_probed_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</>
+            )}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

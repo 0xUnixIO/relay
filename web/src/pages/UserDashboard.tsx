@@ -64,32 +64,33 @@ export default function UserDashboard() {
         {me?.group_name && (
           <div className="rounded-lg border p-4 col-span-2 sm:col-span-3">
             <div className="text-xs text-muted-foreground mb-2">套餐 · {me.group_name}</div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-1 text-sm">
-              <div>
-                <span className="text-muted-foreground">流量</span>
-                <span className="ml-2 font-medium">
+            {/* 套餐属性：移动端 2 列，sm 以上 4 列，每项用 flex-col 避免长内容截断 */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2 text-sm">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-muted-foreground">流量</span>
+                <span className="font-medium">
                   {me.flow_limit_bytes > 0
                     ? `${(me.flow_limit_bytes / 1_073_741_824).toFixed(0)} GB`
                     : "不限"}
                 </span>
               </div>
-              <div>
-                <span className="text-muted-foreground">限速</span>
-                <span className="ml-2 font-medium">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-muted-foreground">限速</span>
+                <span className="font-medium">
                   {me.speed_limit_kbps > 0
                     ? `${(me.speed_limit_kbps / 125).toFixed(0)} Mbps`
                     : "不限"}
                 </span>
               </div>
-              <div>
-                <span className="text-muted-foreground">转发上限</span>
-                <span className="ml-2 font-medium">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-muted-foreground">转发上限</span>
+                <span className="font-medium">
                   {me.forward_limit > 0 ? `${me.forward_limit} 条` : "不限"}
                 </span>
               </div>
-              <div>
-                <span className="text-muted-foreground">到期</span>
-                <span className="ml-2 font-medium">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-muted-foreground">到期</span>
+                <span className="font-medium">
                   {me.expires_at ? me.expires_at.slice(0, 10) : "永久"}
                 </span>
               </div>
@@ -126,18 +127,20 @@ export default function UserDashboard() {
         ) : (
           <div className="rounded-lg border divide-y">
             {forwards.map((f) => (
-              <div key={f.id} className="flex items-center justify-between px-4 py-3 text-sm">
+              <div key={f.id} className="flex items-center justify-between px-4 py-3 text-sm gap-3">
+                {/* 左侧：协议徽章 + 名称 */}
                 <div className="flex items-center gap-3 min-w-0">
                   <ProtocolSetBadge protocols={f.protocols} />
                   <span className="font-medium truncate">{f.name}</span>
                 </div>
-                <div className="flex items-center gap-3 shrink-0 ml-4">
-                  <span className="text-sm text-muted-foreground tabular-nums hidden sm:block">
-                    {f.active_connections} 连接 · ↓{fmtBytes(f.in_flow_bytes)} ↑{fmtBytes(f.out_flow_bytes)}
-                  </span>
+                {/* 右侧：桌面端显示流量统计 + Badge；移动端仅 Badge，流量作为次要信息追加在下方 */}
+                <div className="flex flex-col items-end gap-1 shrink-0">
                   <Badge variant={f.effective_enabled ? "success" : "outline"}>
                     {f.effective_enabled ? "运行中" : "已停用"}
                   </Badge>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {f.active_connections} 连接 · ↓{fmtBytes(f.in_flow_bytes)} ↑{fmtBytes(f.out_flow_bytes)}
+                  </span>
                 </div>
               </div>
             ))}

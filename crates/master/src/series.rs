@@ -54,6 +54,25 @@ impl CounterDeltas {
 
 const MAX_SAMPLES: usize = 120; // 10 min @ 5s cadence
 
+fn compute_node_speed(buf: &NodeBuf) -> (f64, f64) {
+    let mut rx = 0.0f64;
+    let mut tx = 0.0f64;
+    for samples in buf.tunnels.values() {
+        let len = samples.len();
+        if len < 2 {
+            continue;
+        }
+        let prev = &samples[len - 2];
+        let last = &samples[len - 1];
+        let dt = last.ts_unix_ms.saturating_sub(prev.ts_unix_ms) as f64 / 1000.0;
+        if dt > 0.0 {
+            rx += last.bytes_in.saturating_sub(prev.bytes_in) as f64 / dt;
+            tx += last.bytes_out.saturating_sub(prev.bytes_out) as f64 / dt;
+        }
+    }
+    (rx, tx)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HeartbeatSample {
     pub ts_unix_ms: i64,
@@ -135,47 +154,32 @@ impl SeriesStore {
         total
     }
 
+    /// 计算单个节点所有 tunnel 末两帧的聚合速率。
+    pub async fn node_speed(&self, node_id: &str) -> (f64, f64) {
+        let g = self.inner.read().await;
+        let Some(buf) = g.get(node_id) else {
+            return (0.0, 0.0);
+        };
+        compute_node_speed(buf)
+    }
+
     /// Returns (rx_bytes_per_sec, tx_bytes_per_sec) aggregated across all
     /// tunnels for every node, computed from the last two samples of each tunnel.
     pub async fn all_node_net_speeds(&self) -> HashMap<String, (f64, f64)> {
         let g = self.inner.read().await;
-        let mut out = HashMap::new();
-        for (node_id, buf) in g.iter() {
-            let mut rx = 0.0f64;
-            let mut tx = 0.0f64;
-            for samples in buf.tunnels.values() {
-                let len = samples.len();
-                if len < 2 {
-                    continue;
-                }
-                let prev = &samples[len - 2];
-                let last = &samples[len - 1];
-                let dt = (last.ts_unix_ms - prev.ts_unix_ms) as f64 / 1000.0;
-                if dt > 0.0 {
-                    rx += last.bytes_in.saturating_sub(prev.bytes_in) as f64 / dt;
-                    tx += last.bytes_out.saturating_sub(prev.bytes_out) as f64 / dt;
-                }
-            }
-            out.insert(node_id.clone(), (rx, tx));
-        }
-        out
+        g.iter()
+            .map(|(node_id, buf)| (node_id.clone(), compute_node_speed(buf)))
+            .collect()
     }
 
-    pub async fn series(&self, node_id: &str) -> NodeSeries {
+    pub async fn tunnel_series(&self, node_id: &str) -> HashMap<String, Vec<TunnelSample>> {
         let g = self.inner.read().await;
         let Some(buf) = g.get(node_id) else {
-            return NodeSeries {
-                heartbeats: Vec::new(),
-                tunnels: HashMap::new(),
-            };
+            return HashMap::new();
         };
-        NodeSeries {
-            heartbeats: buf.heartbeats.iter().cloned().collect(),
-            tunnels: buf
-                .tunnels
-                .iter()
-                .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
-                .collect(),
-        }
+        buf.tunnels
+            .iter()
+            .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
+            .collect()
     }
 }

@@ -16,6 +16,7 @@ message NodeMessage {
     ProbeResult probe_result = 5;
     RenewCertRequest renew_cert = 6;
     UpgradeReport upgrade_report = 7;
+    UpstreamProbeSample upstream_probe = 8;
   }
 }
 
@@ -80,6 +81,15 @@ message ForwardStats {
   uint64 bytes_out = 4;
   uint32 active_connections = 5;
   uint64 total_connections = 6;
+}
+
+// Node 定期上报的 upstream TCP-connect probe 样本。
+// latency_us=0 表示失败/超时。
+message UpstreamProbeSample {
+  string forward_id    = 1;
+  string upstream_addr = 2;
+  uint64 latency_us    = 3;  // 0 = failed
+  int64  ts_unix_ms    = 4;
 }
 
 message NodeEvent {
