@@ -65,7 +65,7 @@ type ProbeState =
   | { status: "idle" }
   | { status: "checking" }
   | { status: "free" }
-  | { status: "busy"; error: string }
+  | { status: "busy"; nodeDesc: string; error: string }
   | { status: "error"; error: string };
 
 export default function ForwardsPage() {
@@ -109,18 +109,23 @@ export default function ForwardsPage() {
     return m;
   }, [tunnels]);
 
-  // 当前表单选中的入口节点（admin only，用于端口探测）
-  const entryNodeId = useMemo(() => {
-    if (!isAdmin || !form.tunnel_id) return null;
+  // 当前表单选中的入口层所有节点（admin only，用于端口探测）
+  const entryNodeIds = useMemo(() => {
+    if (!isAdmin || !form.tunnel_id) return [];
     const tunnel = tunnelById.get(form.tunnel_id);
-    if (!tunnel) return null;
-    const sorted = (tunnel.hops ?? []).slice().sort((a, b) => a.hop_index - b.hop_index);
-    return sorted[0]?.node_id ?? null;
+    if (!tunnel) return [];
+    return (tunnel.hops ?? []).filter((h) => h.hop_index === 0).map((h) => h.node_id);
   }, [isAdmin, form.tunnel_id, tunnelById]);
 
+  // 第一个入口节点，用于随机端口范围提示
   const entryNode = useMemo(
-    () => nodes.find((n) => n.id === entryNodeId) ?? null,
-    [nodes, entryNodeId],
+    () => nodes.find((n) => n.id === entryNodeIds[0]) ?? null,
+    [nodes, entryNodeIds],
+  );
+
+  const entryNodes = useMemo(
+    () => nodes.filter((n) => entryNodeIds.includes(n.id)),
+    [nodes, entryNodeIds],
   );
 
   // 已被占用的入口端口（排除当前正在编辑的 forward）
@@ -138,23 +143,35 @@ export default function ForwardsPage() {
   const portValid = Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535;
   const portConflict = portValid && usedPorts.has(portNum);
 
-  // 宿主端口占用探测（admin + 有入口节点 + 端口有效且无冲突）
+  // 宿主端口占用探测（admin + 有入口节点 + 端口有效且无冲突），并发探测所有入口节点
   useEffect(() => {
-    if (!open || !entryNodeId || !portValid || portConflict) {
+    if (!open || entryNodeIds.length === 0 || !portValid || portConflict) {
       setHostProbe({ status: "idle" });
       return;
     }
     setHostProbe({ status: "checking" });
     const handle = setTimeout(async () => {
       try {
-        const res = await Api.probeNodePort(entryNodeId, portNum, "tcp");
-        setHostProbe(res.free ? { status: "free" } : { status: "busy", error: res.error || "" });
+        const results = await Promise.all(
+          entryNodeIds.map((nid) => Api.probeNodePort(nid, portNum, "tcp")),
+        );
+        const busyIdx = results.findIndex((r) => !r.free);
+        if (busyIdx >= 0) {
+          const busyNode = entryNodes.find((n) => n.id === entryNodeIds[busyIdx]);
+          setHostProbe({
+            status: "busy",
+            nodeDesc: busyNode?.hostname ?? entryNodeIds[busyIdx],
+            error: results[busyIdx].error || "",
+          });
+        } else {
+          setHostProbe({ status: "free" });
+        }
       } catch (e: any) {
         setHostProbe({ status: "error", error: e?.message ?? "探测失败" });
       }
     }, 400);
     return () => clearTimeout(handle);
-  }, [open, editing, entryNodeId, portNum, portValid, portConflict]);
+  }, [open, editing, entryNodeIds, entryNodes, portNum, portValid, portConflict]);
 
   const randomPort = () => {
     const rangeStart = entryNode?.port_range_start || 10000;
@@ -563,14 +580,14 @@ export default function ForwardsPage() {
                   />
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <span tabIndex={!entryNodeId ? 0 : undefined}>
-                        <Button type="button" variant="outline" size="icon" onClick={randomPort} disabled={!entryNodeId}>
+                      <span tabIndex={entryNodeIds.length === 0 ? 0 : undefined}>
+                        <Button type="button" variant="outline" size="icon" onClick={randomPort} disabled={entryNodeIds.length === 0}>
                           <Shuffle className="h-4 w-4" />
                         </Button>
                       </span>
                     </TooltipTrigger>
                     <TooltipContent>
-                      {!entryNodeId ? "请先选择隧道" : entryNode ? `随机空闲端口（${entryNode.port_range_start}–${entryNode.port_range_end}）` : "随机分配端口"}
+                      {entryNodeIds.length === 0 ? "请先选择隧道" : entryNode ? `随机空闲端口（${entryNode.port_range_start}–${entryNode.port_range_end}）` : "随机分配端口"}
                     </TooltipContent>
                   </Tooltip>
                 </div>
@@ -581,8 +598,14 @@ export default function ForwardsPage() {
                     {!portConflict && portValid && (
                       <>
                         {hostProbe.status === "checking" && <span className="text-muted-foreground">检测宿主占用中…</span>}
-                        {hostProbe.status === "free" && <span className="text-emerald-600 dark:text-emerald-400">✓ 节点 {entryNodeId} 上端口 {portNum} 空闲</span>}
-                        {hostProbe.status === "busy" && <span className="text-destructive">✗ 端口 {portNum} 已被节点宿主进程占用{hostProbe.error ? `（${hostProbe.error}）` : ""}</span>}
+                        {hostProbe.status === "free" && (
+                          <span className="text-emerald-600 dark:text-emerald-400">
+                            {entryNodes.length > 1
+                              ? `✓ 所有入口节点（${entryNodes.map((n) => n.hostname).join("、")}）端口 ${portNum} 均空闲`
+                              : `✓ 节点 ${entryNode?.hostname ?? entryNodeIds[0]} 上端口 ${portNum} 空闲`}
+                          </span>
+                        )}
+                        {hostProbe.status === "busy" && <span className="text-destructive">✗ 端口 {portNum} 已被节点 {hostProbe.nodeDesc} 宿主进程占用{hostProbe.error ? `（${hostProbe.error}）` : ""}</span>}
                         {hostProbe.status === "error" && <span className="text-muted-foreground">无法探测：{hostProbe.error}</span>}
                       </>
                     )}
