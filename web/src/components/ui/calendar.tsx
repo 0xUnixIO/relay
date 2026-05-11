@@ -4,28 +4,34 @@ import { cn } from "@/lib/utils"
 
 type CalendarProps = React.ComponentProps<typeof DayPicker>
 
-function Calendar({ className, classNames, showOutsideDays = true, ...props }: CalendarProps) {
+function Calendar({ className, classNames, showOutsideDays = true, captionLayout, ...props }: CalendarProps) {
+  const isDropdown = captionLayout === "dropdown"
+    || captionLayout === "dropdown-months"
+    || captionLayout === "dropdown-years";
   return (
     <DayPicker
+      captionLayout={captionLayout}
       showOutsideDays={showOutsideDays}
       className={cn("p-3", className)}
       classNames={{
         months: "flex flex-col sm:flex-row gap-4",
         month: "flex flex-col gap-4",
-        month_caption: "flex justify-center pt-1 relative items-center w-full",
-        caption_label: "text-sm font-medium",
+        month_caption: "relative flex justify-center items-center pt-1 h-7",
+        // dropdown 模式下 dropdowns 本身已显示月份年份，caption_label 隐藏避免重复
+        caption_label: cn("text-sm font-medium", isDropdown && "hidden"),
         dropdowns: "flex gap-1 items-center",
         dropdown: "appearance-none bg-transparent border-0 text-sm font-medium cursor-pointer hover:text-foreground focus:outline-none",
         dropdown_root: "relative",
-        nav: "flex items-center gap-1",
+        // nav 绝对定位铺满 caption，justify-between 将两个箭头推到两端，不挤压中间内容
+        nav: "absolute inset-x-0 inset-y-0 flex items-center justify-between pointer-events-none",
         button_previous: cn(
-          "absolute left-1 h-7 w-7 bg-transparent p-0 opacity-50 hover:opacity-100",
+          "pointer-events-auto h-7 w-7 bg-transparent p-0 opacity-50 hover:opacity-100",
           "inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors",
           "hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
           "disabled:pointer-events-none disabled:opacity-50"
         ),
         button_next: cn(
-          "absolute right-1 h-7 w-7 bg-transparent p-0 opacity-50 hover:opacity-100",
+          "pointer-events-auto h-7 w-7 bg-transparent p-0 opacity-50 hover:opacity-100",
           "inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors",
           "hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
           "disabled:pointer-events-none disabled:opacity-50"
