@@ -85,7 +85,7 @@ pub fn bind_tcp_listener(addr: std::net::SocketAddr) -> Result<TcpListener> {
     sock.set_reuse_address(true)?;
     sock.set_nonblocking(true)?;
     sock.bind(&addr.into())?;
-    sock.listen(1024)?;
+    sock.listen(4096)?;
     Ok(TcpListener::from_std(std::net::TcpListener::from(sock))?)
 }
 
@@ -620,6 +620,18 @@ async fn run_tcp(
     tracing::info!(tunnel = %id, "tcp listener stopped");
 }
 
+/// 对 TcpStream 启用 keepalive：60s 空闲后开始探测，10s 间隔，Linux 下最多 3 次。
+/// 探测失败后内核关闭连接，fd 立即回收，避免客户端断网后死连接长达 2 小时。
+fn apply_keepalive(stream: &TcpStream) -> std::io::Result<()> {
+    use socket2::{SockRef, TcpKeepalive};
+    let ka = TcpKeepalive::new()
+        .with_time(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(10));
+    #[cfg(target_os = "linux")]
+    let ka = ka.with_retries(3);
+    SockRef::from(stream).set_tcp_keepalive(&ka)
+}
+
 async fn pipe_tcp(
     inbound: TcpStream,
     upstreams: Arc<Vec<SocketAddr>>,
@@ -629,6 +641,7 @@ async fn pipe_tcp(
     rate_limiter: &Arc<Option<RateLimiter>>,
 ) -> std::io::Result<()> {
     inbound.set_nodelay(true)?;
+    apply_keepalive(&inbound)?;
     let n = upstreams.len();
     let start = cursor.fetch_add(1, Ordering::Relaxed) % n;
 
@@ -641,6 +654,7 @@ async fn pipe_tcp(
             match TcpStream::connect(upstream).await {
                 Ok(stream) => {
                     stream.set_nodelay(true)?;
+                    apply_keepalive(&stream)?;
                     connected = Some(stream);
                     break;
                 }
