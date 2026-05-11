@@ -495,10 +495,15 @@ function AdvancedSettings({
 }
 
 /* ------------------------------------------------------------------ */
-/*  HopEditor — 纯 SVG 拓扑图 + 底部内嵌节点选择                           */
+/*  HopEditor — SVG 拓扑图 + 底部节点选择                                  */
 /* ------------------------------------------------------------------ */
 
 type PickerTarget = { type: "add"; li: number } | { type: "new" };
+
+// 按 hostname 估算节点框宽度（含左侧状态点 + 右侧删除按钮的空间）
+function hopNodeW(label: string) {
+  return Math.max(96, Math.ceil(label.length * 7.2) + 48);
+}
 
 function HopEditor({
   nodes,
@@ -514,12 +519,33 @@ function HopEditor({
   disabledReason?: string;
 }) {
   const [picker, setPicker] = useState<PickerTarget | null>(null);
+  const [search, setSearch] = useState("");
+  const [hoverDel, setHoverDel] = useState<string | null>(null);
 
-  const NW = 96, NH = 30, HG = 84, VG = 10, PX = 20, PY = 16;
-  const ABR = 11, ABM = 8;
+  // 切换 picker 时清空搜索
+  useEffect(() => { setSearch(""); }, [picker]);
+
+  const NH = 30, HG = 80, VG = 10, PX = 20, PY = 12;
+  const HEADER_H = 20; // 列标题高度
+  const ABR = 11, ABM = 8; // + 圆钮半径和上间距
+  const GNW = 96; // 新增跳幽灵框宽度
+
+  // 节点标签
+  const nodeLabel = (id: string) => nodes.find((n) => n.id === id)?.hostname || id;
+  // 每列宽度（取该列所有节点标签的最大估算宽度）
+  const colW = (li: number) => {
+    const layer = layers[li] ?? [];
+    return layer.length > 0 ? Math.max(...layer.map((id) => hopNodeW(nodeLabel(id)))) : 96;
+  };
+  const colWidths = layers.map((_, li) => colW(li));
+  // 累计 x 偏移
+  const colX = (i: number): number => {
+    let x = PX;
+    for (let j = 0; j < i; j++) x += colWidths[j] + HG;
+    return x;
+  };
 
   const allIds = new Set(layers.flat());
-  const available = nodes.filter((n) => n.tunnel_eligible && !allIds.has(n.id));
 
   const addToLayer = (li: number, id: string) => {
     onChange(layers.map((l, i) => (i === li ? [...l, id] : l)));
@@ -535,7 +561,6 @@ function HopEditor({
     onChange([...layers, [id]]);
     setPicker(null);
   };
-
   const toggle = (next: PickerTarget) =>
     setPicker((prev) => {
       if (!prev) return next;
@@ -547,21 +572,41 @@ function HopEditor({
   const maxNodes = layers.length > 0 ? Math.max(...layers.map((l) => l.length)) : 1;
   const dataH = maxNodes * NH + (maxNodes - 1) * VG;
   const extraH = disabled ? 0 : ABM + ABR * 2;
-  const numCols = layers.length + (disabled ? 0 : 1);
-  const W = Math.max(NW + PX * 2, PX * 2 + numCols * NW + Math.max(0, numCols - 1) * HG);
-  const H = PY + dataH + PY + extraH;
+  const svgH = PY + HEADER_H + dataH + PY + extraH;
+  const svgW =
+    layers.length === 0
+      ? PX * 2 + GNW
+      : colX(layers.length - 1) + colWidths[layers.length - 1] + (disabled ? PX : HG + GNW + PX);
 
-  const lx = (i: number) => PX + i * (NW + HG);
   const nodeYs = (layer: string[]) => {
     const th = layer.length * NH + (layer.length - 1) * VG;
-    const sy = PY + (dataH - th) / 2;
+    const sy = PY + HEADER_H + (dataH - th) / 2;
     return layer.map((_, j) => sy + j * (NH + VG));
   };
   const groupCenterY = (layer: string[]) => {
     const ys = nodeYs(layer);
-    if (ys.length === 0) return PY + dataH / 2;
+    if (ys.length === 0) return PY + HEADER_H + dataH / 2;
     return (ys[0] + ys[ys.length - 1] + NH) / 2;
   };
+
+  const colLabel = (li: number) => {
+    if (li === 0) return "入口";
+    if (li === layers.length - 1 && layers.length > 1) return "出口";
+    return `Hop ${li + 1}`;
+  };
+  const pickerTitle = () => {
+    if (!picker) return "";
+    if (picker.type === "new") return "新建跳";
+    const li = picker.li;
+    if (li === 0) return "添加到入口";
+    if (li === layers.length - 1) return "添加到出口";
+    return `添加到 Hop ${li + 1}`;
+  };
+
+  const baseOpts = nodes.filter((n) => n.tunnel_eligible && !allIds.has(n.id));
+  const pickerOpts = search
+    ? baseOpts.filter((n) => (n.hostname || n.id).toLowerCase().includes(search.toLowerCase()))
+    : baseOpts;
 
   if (disabled && layers.length === 0) {
     return (
@@ -577,11 +622,6 @@ function HopEditor({
     );
   }
 
-  const pickerOpts =
-    picker?.type === "add"
-      ? nodes.filter((n) => n.tunnel_eligible && !allIds.has(n.id))
-      : available;
-
   return (
     <div className="space-y-3">
       <Label>链路配置</Label>
@@ -592,24 +632,61 @@ function HopEditor({
       )}
 
       <div className="rounded-md border bg-muted/20">
-        {/* ── SVG 拓扑图 ── */}
         <ScrollArea className="p-3">
-          <svg width={W} height={H} className="overflow-visible">
+          <svg width={svgW} height={svgH} className="overflow-visible">
 
+            {/* ── 活跃列高亮 ── */}
+            {!disabled && picker?.type === "add" &&
+              layers.map((_, li) => {
+                if (picker.li !== li) return null;
+                const cw = colWidths[li];
+                return (
+                  <rect key={`hl-${li}`}
+                    x={colX(li) - 6} y={PY + HEADER_H - 6}
+                    width={cw + 12} height={dataH + 12}
+                    rx={8}
+                    fill="hsl(var(--primary) / 0.06)"
+                    stroke="hsl(var(--primary) / 0.25)"
+                    strokeWidth={1}
+                  />
+                );
+              })}
+
+            {/* ── 列标题 ── */}
+            {layers.map((_, li) => (
+              <text key={`hdr-${li}`}
+                x={colX(li) + colWidths[li] / 2}
+                y={PY + HEADER_H - 6}
+                textAnchor="middle" fontSize={10} fontWeight={500}
+                fill={
+                  picker?.type === "add" && picker.li === li
+                    ? "hsl(var(--primary))"
+                    : "hsl(var(--muted-foreground))"
+                }
+              >
+                {colLabel(li)}
+              </text>
+            ))}
+
+            {/* ── 跨层连线 ── */}
             {layers.slice(0, -1).map((layer, li) => {
-              const x1 = lx(li) + NW, y1 = groupCenterY(layer);
-              const x2 = lx(li + 1), y2 = groupCenterY(layers[li + 1]);
+              const x1 = colX(li) + colWidths[li], y1 = groupCenterY(layer);
+              const x2 = colX(li + 1), y2 = groupCenterY(layers[li + 1]);
               const mx = (x1 + x2) / 2;
               return (
-                <path key={li} d={`M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`}
+                <path key={`edge-${li}`}
+                  d={`M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`}
                   fill="none" stroke="hsl(var(--border))" strokeWidth={1.5} />
               );
             })}
 
+            {/* ── 虚线：最后一列 → 新增跳幽灵框 ── */}
             {!disabled && layers.length > 0 && (() => {
               const last = layers[layers.length - 1];
-              const x1 = lx(layers.length - 1) + NW, y1 = groupCenterY(last);
-              const x2 = lx(layers.length), y2 = PY + dataH / 2;
+              const x1 = colX(layers.length - 1) + colWidths[layers.length - 1];
+              const y1 = groupCenterY(last);
+              const x2 = colX(layers.length);
+              const y2 = PY + HEADER_H + (dataH - NH) / 2 + NH / 2;
               const mx = (x1 + x2) / 2;
               return (
                 <path d={`M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`}
@@ -617,54 +694,74 @@ function HopEditor({
               );
             })()}
 
+            {/* ── 节点框 ── */}
             {layers.map((layer, li) =>
               nodeYs(layer).map((y, ni) => {
                 const nodeId = layer[ni];
                 const node = nodes.find((n) => n.id === nodeId);
                 const online = node ? isOnline(node) : false;
-                const x = lx(li);
+                const x = colX(li);
+                const cw = colWidths[li];
+                const label = nodeLabel(nodeId);
+                const isDel = hoverDel === nodeId;
                 return (
                   <g key={nodeId}>
-                    <rect x={x} y={y} width={NW} height={NH} rx={6}
+                    <title>{label}</title>
+                    <rect x={x} y={y} width={cw} height={NH} rx={6}
                       fill="hsl(var(--background))" stroke="hsl(var(--border))" strokeWidth={1} />
+                    {/* 在线状态点 */}
                     <circle cx={x + 10} cy={y + NH / 2} r={3}
                       fill={online ? "#10b981" : "hsl(var(--muted-foreground))"}
                       fillOpacity={online ? 1 : 0.35} />
+                    {/* 节点名（全显示，宽度自适应） */}
                     <text x={x + 19} y={y + NH / 2 + 4} fontSize={11}
                       fontFamily="ui-monospace, monospace" fill="hsl(var(--foreground))">
-                      {(node?.hostname || nodeId).slice(0, 10)}
+                      {label}
                     </text>
+                    {/* 删除按钮 */}
                     {!disabled && (
-                      <g onClick={() => removeFromLayer(li, nodeId)} style={{ cursor: "pointer" }}>
-                        <rect x={x + NW - 18} y={y + 4} width={16} height={NH - 8} rx={3} fill="transparent" />
-                        <text x={x + NW - 10} y={y + NH / 2 + 4} textAnchor="middle"
-                          fontSize={12} fontFamily="sans-serif" fill="hsl(var(--muted-foreground))">×</text>
+                      <g
+                        onClick={() => removeFromLayer(li, nodeId)}
+                        onMouseEnter={() => setHoverDel(nodeId)}
+                        onMouseLeave={() => setHoverDel(null)}
+                        style={{ cursor: "pointer" }}
+                      >
+                        <rect x={x + cw - 20} y={y + 4} width={18} height={NH - 8} rx={3}
+                          fill={isDel ? "hsl(var(--destructive) / 0.1)" : "transparent"} />
+                        <text x={x + cw - 11} y={y + NH / 2 + 4.5} textAnchor="middle"
+                          fontSize={13} fontFamily="sans-serif"
+                          fill={isDel ? "hsl(var(--destructive))" : "hsl(var(--muted-foreground))"}>
+                          ×
+                        </text>
                       </g>
                     )}
                   </g>
                 );
-              }),
+              })
             )}
 
+            {/* ── 并联数标记（列右上角） ── */}
             {layers.map((layer, li) =>
               layer.length > 1 ? (
-                <text key={`cnt-${li}`} x={lx(li) + NW / 2} y={PY - 4}
-                  textAnchor="middle" fontSize={10} fontWeight={500}
+                <text key={`cnt-${li}`}
+                  x={colX(li) + colWidths[li] - 4} y={PY + HEADER_H - 6}
+                  textAnchor="end" fontSize={10} fontWeight={600}
                   fill="hsl(var(--muted-foreground))">
                   ×{layer.length}
                 </text>
-              ) : null,
+              ) : null
             )}
 
+            {/* ── 每列下方 + 圆钮（添加节点到该列） ── */}
             {!disabled && layers.map((layer, li) => {
               const ys = nodeYs(layer);
               const cy = ys[ys.length - 1] + NH + ABM + ABR;
-              const cx = lx(li) + NW / 2;
+              const cx = colX(li) + colWidths[li] / 2;
               const active = picker?.type === "add" && picker.li === li;
               return (
                 <g key={`plus-${li}`} onClick={() => toggle({ type: "add", li })} style={{ cursor: "pointer" }}>
                   <circle cx={cx} cy={cy} r={ABR}
-                    fill={active ? "hsl(var(--primary) / 0.08)" : "hsl(var(--background))"}
+                    fill={active ? "hsl(var(--primary) / 0.1)" : "hsl(var(--background))"}
                     stroke={active ? "hsl(var(--primary))" : "hsl(var(--border))"}
                     strokeWidth={active ? 1.5 : 1}
                     strokeDasharray={active ? undefined : "3 2"} />
@@ -675,48 +772,79 @@ function HopEditor({
               );
             })}
 
+            {/* ── 新增跳幽灵框 ── */}
             {!disabled && (() => {
               const active = picker?.type === "new";
-              const sx = lx(layers.length), sy = PY + (dataH - NH) / 2;
+              const sx = layers.length === 0 ? PX : colX(layers.length);
+              const sy = PY + HEADER_H + (dataH - NH) / 2;
               return (
                 <g onClick={() => toggle({ type: "new" })} style={{ cursor: "pointer" }}>
-                  <rect x={sx} y={sy} width={NW} height={NH} rx={6}
+                  <rect x={sx} y={sy} width={GNW} height={NH} rx={6}
                     fill={active ? "hsl(var(--primary) / 0.08)" : "hsl(var(--background))"}
-                    fillOpacity={active ? 1 : 0.5}
                     stroke={active ? "hsl(var(--primary))" : "hsl(var(--border))"}
                     strokeWidth={active ? 1.5 : 1}
                     strokeDasharray={active ? undefined : "4 2"} />
-                  <text x={sx + NW / 2} y={sy + NH / 2 + 4.5} textAnchor="middle"
-                    fontSize={14} fontFamily="sans-serif"
+                  <text x={sx + GNW / 2} y={sy + NH / 2} textAnchor="middle"
+                    fontSize={13} fontFamily="sans-serif" dominantBaseline="central"
                     fill={active ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))"}>+</text>
+                  <text x={sx + GNW / 2} y={sy + NH + 10} textAnchor="middle"
+                    fontSize={9}
+                    fill={active ? "hsl(var(--primary) / 0.7)" : "hsl(var(--muted-foreground) / 0.6)"}>
+                    新增跳
+                  </text>
                 </g>
               );
             })()}
           </svg>
         </ScrollArea>
 
-        {/* ── 底部节点选择（点击 + 展开，同一个 + 再次点击收起） ── */}
+        {/* ── Picker 面板 ── */}
         {picker && (
-          <div className="border-t px-3 py-2 flex flex-wrap gap-1.5">
-            {pickerOpts.length > 0 ? pickerOpts.map((n) => {
-              const online = isOnline(n);
-              return (
-                <button
-                  key={n.id}
-                  type="button"
-                  onClick={() => picker.type === "add" ? addToLayer(picker.li, n.id) : addNewLayer(n.id)}
-                  className={cn(
-                    "flex items-center gap-1.5 rounded border px-2 py-1 text-xs transition-colors hover:bg-accent",
-                    !online && "opacity-60",
-                  )}
-                >
-                  <span className={cn("h-1.5 w-1.5 rounded-full flex-shrink-0", online ? "bg-emerald-500" : "bg-muted-foreground/40")} />
-                  <span className="font-mono">{n.hostname || n.id}</span>
-                </button>
-              );
-            }) : (
-              <span className="text-xs text-muted-foreground py-0.5">无可用节点</span>
-            )}
+          <div className="border-t">
+            {/* 标题 + 搜索框 */}
+            <div className="flex items-center gap-2 px-3 pt-2 pb-1.5">
+              <span className="text-xs font-medium text-muted-foreground shrink-0">
+                {pickerTitle()}
+              </span>
+              <input
+                autoFocus
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="搜索节点…"
+                className="ml-auto h-6 w-32 rounded border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-primary/50"
+              />
+            </div>
+            {/* 节点列表 */}
+            <div className="px-3 pb-2 flex flex-wrap gap-1.5">
+              {pickerOpts.length > 0
+                ? pickerOpts.map((n) => {
+                    const online = isOnline(n);
+                    return (
+                      <button
+                        key={n.id}
+                        type="button"
+                        onClick={() =>
+                          picker.type === "add"
+                            ? addToLayer(picker.li, n.id)
+                            : addNewLayer(n.id)
+                        }
+                        className={cn(
+                          "flex items-center gap-1.5 rounded border px-2 py-1 text-xs transition-colors hover:bg-accent",
+                          !online && "opacity-60",
+                        )}
+                      >
+                        <span className={cn("h-1.5 w-1.5 rounded-full shrink-0",
+                          online ? "bg-emerald-500" : "bg-muted-foreground/40")} />
+                        <span className="font-mono">{n.hostname || n.id}</span>
+                      </button>
+                    );
+                  })
+                : (
+                  <span className="text-xs text-muted-foreground py-0.5">
+                    {search ? "无匹配节点" : "无可用节点"}
+                  </span>
+                )}
+            </div>
           </div>
         )}
       </div>
