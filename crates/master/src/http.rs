@@ -156,6 +156,10 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         .route("/api/v1/events/forwards", get(forward_stats_stream))
         .route("/api/v1/forwards/:id/stats", get(forward_stats_history))
         .route("/api/v1/forwards/:id/probe-stats", get(forward_probe_stats))
+        .route(
+            "/api/v1/forwards/:id/probe-series",
+            get(forward_probe_series),
+        )
         .route("/api/v1/stats/traffic", get(global_traffic_stats_handler));
 
     let protected = admin
@@ -2108,13 +2112,13 @@ async fn probe_forward(
         return Err(ApiError::new(StatusCode::NOT_FOUND, "转发不存在或无节点"));
     }
 
-    let remote_addr: Option<String> =
-        sqlx::query_scalar("SELECT remote_addrs[1] FROM forwards WHERE id = $1")
+    let remote_addrs: Option<Vec<String>> =
+        sqlx::query_scalar("SELECT remote_addrs FROM forwards WHERE id = $1")
             .bind(id)
             .fetch_optional(&s.db)
-            .await?
-            .flatten();
-    let upstream = remote_addr
+            .await?;
+    let upstreams = remote_addrs
+        .filter(|v| !v.is_empty())
         .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "转发无上游地址"))?;
 
     // Group by hop_index; layers[i] = Vec<HopRow>.
@@ -2141,13 +2145,15 @@ async fn probe_forward(
         let is_last = i + 1 == layers.len();
         for from in layer {
             if is_last {
-                segments.push(Seg {
-                    from_node: from.node_id.clone(),
-                    from_name: from.node_name.clone(),
-                    to_node: String::new(),
-                    to_name: String::new(),
-                    target: upstream.clone(),
-                });
+                for upstream in &upstreams {
+                    segments.push(Seg {
+                        from_node: from.node_id.clone(),
+                        from_name: from.node_name.clone(),
+                        to_node: String::new(),
+                        to_name: String::new(),
+                        target: upstream.clone(),
+                    });
+                }
             } else {
                 let next_layer = &layers[i + 1];
                 for next in next_layer {
@@ -3670,6 +3676,62 @@ async fn forward_probe_stats(
         .collect();
 
     Ok(Json(stats))
+}
+
+#[derive(Debug, Serialize)]
+struct ProbeSample {
+    ts: DateTime<Utc>,
+    upstream_addr: String,
+    avg_latency_us: Option<f64>,
+    loss_rate: f64,
+}
+
+async fn forward_probe_series(
+    State(s): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(id): Path<i64>,
+    Query(q): Query<StatsHistoryQuery>,
+) -> ApiResult<Json<Vec<ProbeSample>>> {
+    authorize_forward_access(&s.db, &claims, id).await?;
+
+    let (bucket_secs, since) = match q.period.as_deref() {
+        Some("7d") => (3600_f64, "7 days"),
+        Some("24h") => (300_f64, "24 hours"),
+        _ => (300_f64, "1 hour"),
+    };
+
+    let rows = sqlx::query(
+        "SELECT
+             upstream_addr,
+             to_timestamp(floor(extract(epoch from probed_at) / $1) * $1) AS ts,
+             AVG(latency_us) FILTER (WHERE latency_us IS NOT NULL)         AS avg_latency_us,
+             COUNT(*) FILTER (WHERE latency_us IS NULL)::float8
+                 / NULLIF(COUNT(*), 0)::float8                             AS loss_rate
+         FROM forward_probe_samples
+         WHERE forward_id = $2
+           AND probed_at >= now() - $3::interval
+         GROUP BY upstream_addr, ts
+         ORDER BY upstream_addr, ts",
+    )
+    .bind(bucket_secs)
+    .bind(id)
+    .bind(since)
+    .fetch_all(&s.db)
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    use sqlx::Row;
+    let samples: Vec<ProbeSample> = rows
+        .iter()
+        .map(|r| ProbeSample {
+            ts: r.get("ts"),
+            upstream_addr: r.get("upstream_addr"),
+            avg_latency_us: r.get("avg_latency_us"),
+            loss_rate: r.get::<Option<f64>, _>("loss_rate").unwrap_or(0.0),
+        })
+        .collect();
+
+    Ok(Json(samples))
 }
 
 async fn public_status_stream(
