@@ -1,17 +1,28 @@
+import { useState } from "react";
 import useSWR from "swr";
 import ReactMarkdown from "react-markdown";
 import { fmtBytes } from "@/lib/utils";
-import { Api } from "@/lib/api";
-import { Network, Megaphone } from "lucide-react";
+import { Api, type Tunnel } from "@/lib/api";
+import { Network, Megaphone, Route as RouteIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { ProtocolSetBadge } from "@/components/ui/protocol-set-badge";
 import { EmptyState } from "@/components/ui/empty-state";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { TunnelTopology } from "@/components/TunnelTopology";
 
 
 export default function UserDashboard() {
   const { data: forwards = [] } = useSWR("forwards", Api.listForwards);
   const { data: cfg } = useSWR("system-config", Api.getConfig, { revalidateOnFocus: false });
   const { data: me } = useSWR("me", Api.getMe);
+  const { data: tunnels = [] } = useSWR<Tunnel[]>("tunnels", Api.listTunnels);
+  const [topoTarget, setTopoTarget] = useState<Tunnel | null>(null);
 
   const enabled = forwards.filter((f) => f.effective_enabled);
   const totalIn = forwards.reduce((s, f) => s + f.in_flow_bytes, 0);
@@ -115,6 +126,35 @@ export default function UserDashboard() {
         </div>
       </div>
 
+      {/* 可用隧道列表 */}
+      <div className="space-y-3">
+        <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">可用隧道</h2>
+        {tunnels.length === 0 ? (
+          <EmptyState icon={RouteIcon} title="暂无可用隧道" description="联系管理员分配隧道后会显示在这里。" />
+        ) : (
+          <div className="rounded-lg border divide-y">
+            {tunnels.map((t) => (
+              <button
+                key={t.id}
+                className="w-full flex items-center justify-between px-4 py-3 text-sm gap-3 hover:bg-accent transition-colors text-left"
+                onClick={() => setTopoTarget(t)}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <RouteIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="font-medium truncate">{t.name}</span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <ProtocolSetBadge protocols={t.protocols} />
+                  <span className="text-xs text-muted-foreground">
+                    {t.hops?.length ?? 0} 节点
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">我的转发</h2>
         {forwards.length === 0 ? (
@@ -142,6 +182,25 @@ export default function UserDashboard() {
           </div>
         )}
       </div>
+
+      {/* 隧道拓扑弹窗 */}
+      <Dialog open={!!topoTarget} onOpenChange={(v) => !v && setTopoTarget(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <RouteIcon className="h-4 w-4" />
+              {topoTarget?.name}
+            </DialogTitle>
+            <DialogDescription>隧道节点拓扑</DialogDescription>
+          </DialogHeader>
+          {topoTarget && (
+            <TunnelTopology
+              layers={topoTarget.layers ?? []}
+              nodeNames={topoTarget.node_names ?? {}}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

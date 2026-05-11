@@ -151,6 +151,8 @@ export interface Tunnel {
   is_layered?: boolean;
   user_tunnel_count: number;
   forward_count: number;
+  /** node_id → hostname */
+  node_names?: Record<string, string>;
 }
 
 export interface CreateTunnelReq {

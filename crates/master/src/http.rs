@@ -1480,6 +1480,16 @@ async fn load_tunnel_view(db: &sqlx::PgPool, t: Tunnel) -> Result<TunnelView, Ap
     .bind(t.id)
     .fetch_one(db)
     .await?;
+    // 查询该隧道所有节点的 hostname，用于前端展示
+    let name_rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT n.id::text, n.hostname FROM nodes n
+           JOIN tunnel_hops th ON th.node_id = n.id
+          WHERE th.tunnel_id = $1",
+    )
+    .bind(t.id)
+    .fetch_all(db)
+    .await?;
+    let node_names: std::collections::HashMap<String, String> = name_rows.into_iter().collect();
     // Group flat rows into layers: layers[hop_index] = [node_id, ...]
     let mut layer_map: std::collections::BTreeMap<i32, Vec<String>> =
         std::collections::BTreeMap::new();
@@ -1501,6 +1511,7 @@ async fn load_tunnel_view(db: &sqlx::PgPool, t: Tunnel) -> Result<TunnelView, Ap
         is_layered,
         user_tunnel_count: count.0,
         forward_count: fwd_count.0,
+        node_names,
     })
 }
 

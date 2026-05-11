@@ -82,6 +82,9 @@ pub struct TunnelView {
     pub is_layered: bool,
     pub user_tunnel_count: i64,
     pub forward_count: i64,
+    /// node_id → hostname 映射，供前端显示节点名称
+    #[serde(default)]
+    pub node_names: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
