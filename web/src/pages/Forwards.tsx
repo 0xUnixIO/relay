@@ -741,7 +741,7 @@ export default function ForwardsPage() {
 
       {/* 延迟探测结果 */}
       <Dialog open={!!probeResult} onOpenChange={(v) => !v && setProbeResult(null)}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Activity className="h-4 w-4" />
