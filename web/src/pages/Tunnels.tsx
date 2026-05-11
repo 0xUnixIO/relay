@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useConfirm } from "@/hooks/useConfirm";
 import useSWR from "swr";
 import {
@@ -21,7 +21,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { Api, type Tunnel, type NodeInfo, type TunnelProbeResult } from "@/lib/api";
+import { Api, type Tunnel, type NodeInfo, type TunnelProbeSegment } from "@/lib/api";
+import { getToken } from "@/lib/auth";
 import { toast } from "sonner";
 
 type Form = {
@@ -60,8 +61,8 @@ export default function TunnelsPage() {
   const [saving, setSaving] = useState(false);
   const [probeOpen, setProbeOpen] = useState(false);
   const [probeTunnel, setProbeTunnel] = useState<Tunnel | null>(null);
-  const [probing, setProbing] = useState(false);
-  const [probeResult, setProbeResult] = useState<TunnelProbeResult | null>(null);
+  const [probeStreaming, setProbeStreaming] = useState(false);
+  const [probeSegments, setProbeSegments] = useState<TunnelProbeSegment[]>([]);
 
   const openNew = () => {
     setEditing(null);
@@ -153,17 +154,37 @@ export default function TunnelsPage() {
 
   const openProbe = async (t: Tunnel) => {
     setProbeTunnel(t);
-    setProbeResult(null);
+    setProbeSegments([]);
+    setProbeStreaming(true);
     setProbeOpen(true);
-    setProbing(true);
     try {
-      const result = await Api.probeTunnel(t.id);
-      setProbeResult(result);
+      const token = getToken();
+      const res = await fetch(`/api/v1/tunnels/${t.id}/probe-stream`, {
+        headers: token ? { authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok || !res.body) { toast.error("探测失败"); setProbeOpen(false); return; }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop()!;
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const seg = JSON.parse(line.slice(6)) as TunnelProbeSegment;
+            setProbeSegments((prev) => [...prev, seg]);
+          } catch {}
+        }
+      }
     } catch (e: any) {
       toast.error(e?.message ?? "探测失败");
       setProbeOpen(false);
     } finally {
-      setProbing(false);
+      setProbeStreaming(false);
     }
   };
 
@@ -242,10 +263,10 @@ export default function TunnelsPage() {
                           size="icon"
                           variant="ghost"
                           onClick={() => openProbe(t)}
-                          disabled={probing && probeTunnel?.id === t.id}
+                          disabled={probeStreaming && probeTunnel?.id === t.id}
                           aria-label="连通性检测"
                         >
-                          <Activity className={`h-4 w-4 ${probing && probeTunnel?.id === t.id ? "animate-pulse" : ""}`} />
+                          <Activity className={`h-4 w-4 ${probeStreaming && probeTunnel?.id === t.id ? "animate-pulse" : ""}`} />
                         </Button>
                         <Button
                           size="icon"
@@ -274,35 +295,18 @@ export default function TunnelsPage() {
         </CardContent>
       </Card>
 
-      {/* 连通性检测对话框（不改动） */}
-      <Dialog open={probeOpen} onOpenChange={(o) => { setProbeOpen(o); if (!o) setProbeResult(null); }}>
-        <DialogContent className="sm:max-w-md">
+      {/* 连通性检测对话框 */}
+      <Dialog open={probeOpen} onOpenChange={(o) => { setProbeOpen(o); if (!o) setProbeSegments([]); }}>
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>连通性检测 — {probeTunnel?.name}</DialogTitle>
             <DialogDescription>逐跳探测各段网络可达性</DialogDescription>
           </DialogHeader>
-          {probing ? (
-            <div className="space-y-2">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="flex items-center gap-3 rounded-lg border p-3 text-sm animate-pulse">
-                  <span className="h-2 w-2 rounded-full bg-muted-foreground/30" />
-                  <div className="flex-1 space-y-1">
-                    <div className="h-3 w-24 rounded bg-muted-foreground/20" />
-                    <div className="h-3 w-32 rounded bg-muted-foreground/20" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : probeResult && (() => {
-            const nodeName = (id: string) =>
-              nodes.find((n) => n.id === id)?.hostname || id;
-            return (
-              <TunnelProbeTopology
-                segments={probeResult.segments}
-                nodeName={nodeName}
-              />
-            );
-          })()}
+          <TunnelProbeTopology
+            segments={probeSegments}
+            streaming={probeStreaming}
+            nodeName={(id) => nodes.find((n) => n.id === id)?.hostname || id}
+          />
           <DialogFooter>
             <Button variant="ghost" onClick={() => setProbeOpen(false)}>关闭</Button>
           </DialogFooter>
@@ -720,19 +724,57 @@ function HopEditor({
   );
 }
 
-// ── 隧道探测拓扑图 ─────────────────────────────────────────────────────────────
+// ── 隧道探测拓扑图（支持 pan/zoom，流式渲染）──────────────────────────────────
 
-import type { TunnelProbeSegment } from "@/lib/api";
+// 将 scale 夹在 [min, max] 范围内
+function clamp(v: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, v));
+}
+
+// 根据文本长度估算节点宽度
+function tunnelNodeWidth(label: string) {
+  return Math.max(72, label.length * 7.5 + 20);
+}
+
+interface DragOrigin {
+  ox: number;
+  oy: number;
+  otx: number;
+  oty: number;
+}
+
+interface Transform {
+  scale: number;
+  tx: number;
+  ty: number;
+}
 
 function TunnelProbeTopology({
   segments,
+  streaming,
   nodeName,
 }: {
   segments: TunnelProbeSegment[];
+  streaming?: boolean;
   nodeName: (id: string) => string;
 }) {
-  const NODE_W = 72, NODE_H = 28, H_GAP = 100, V_GAP = 44, PAD = 16;
+  const NODE_H = 28, H_GAP = 100, V_GAP = 44, PAD = 16;
 
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<DragOrigin | null>(null);
+  const [t, setT] = useState<Transform>({ scale: 1, tx: 0, ty: 0 });
+
+  // 无数据且仍在流式探测时，展示等待提示
+  if (segments.length === 0 && streaming) {
+    return (
+      <div className="flex h-24 items-center justify-center gap-2 text-sm text-muted-foreground">
+        <span className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+        探测中，等待第一段结果…
+      </div>
+    );
+  }
+
+  // 构建节点标签（完整显示，不截断）
   const labels = new Map<string, string>();
   for (const s of segments) {
     labels.set(s.from_node, nodeName(s.from_node));
@@ -743,7 +785,7 @@ function TunnelProbeTopology({
     s.to ? [{ from: s.from_node, to: s.to, us: s.latency_us, ok: s.ok, err: s.error }] : [],
   );
 
-  // 拓扑排序分层
+  // 拓扑排序分层（BFS / longest-path）
   const inDegree = new Map<string, number>();
   const adj = new Map<string, string[]>();
   for (const e of edges) {
@@ -764,24 +806,47 @@ function TunnelProbeTopology({
     }
   }
 
-  const layers = new Map<number, string[]>();
+  const layerMap = new Map<number, string[]>();
   for (const [id, l] of layerOf) {
-    const arr = layers.get(l) ?? [];
+    const arr = layerMap.get(l) ?? [];
     arr.push(id);
-    layers.set(l, arr);
+    layerMap.set(l, arr);
   }
-  const numLayers = Math.max(...layerOf.values()) + 1;
-  const maxPerLayer = Math.max(...[...layers.values()].map((a) => a.length));
 
-  const svgW = PAD * 2 + numLayers * NODE_W + (numLayers - 1) * H_GAP;
+  // 空 segments 且不在流式探测 => 无内容
+  if (layerOf.size === 0) {
+    return null;
+  }
+
+  const numLayers = Math.max(...layerOf.values()) + 1;
+  const maxPerLayer = Math.max(...[...layerMap.values()].map((a) => a.length));
+
+  // 每层节点宽度（取该层最宽标签）
+  const layerWidths = new Map<number, number>();
+  for (const [l, nodeIds] of layerMap) {
+    const w = Math.max(...nodeIds.map((id) => tunnelNodeWidth(labels.get(id) ?? id)));
+    layerWidths.set(l, w);
+  }
+
+  // 各层 x 偏移
+  const layerX: number[] = [];
+  let curX = PAD;
+  for (let l = 0; l < numLayers; l++) {
+    layerX[l] = curX;
+    curX += (layerWidths.get(l) ?? 72) + H_GAP;
+  }
+
+  const svgW = curX - H_GAP + PAD;
   const svgH = PAD * 2 + maxPerLayer * NODE_H + (maxPerLayer - 1) * V_GAP;
 
-  const pos = new Map<string, { x: number; y: number }>();
-  for (const [l, nodes] of layers) {
-    const x = PAD + l * (NODE_W + H_GAP);
-    const totalH = nodes.length * NODE_H + (nodes.length - 1) * V_GAP;
+  // 计算每个节点坐标
+  const pos = new Map<string, { x: number; y: number; w: number }>();
+  for (const [l, nodeIds] of layerMap) {
+    const x = layerX[l];
+    const w = layerWidths.get(l) ?? 72;
+    const totalH = nodeIds.length * NODE_H + (nodeIds.length - 1) * V_GAP;
     const startY = PAD + (svgH - PAD * 2 - totalH) / 2;
-    nodes.forEach((id, i) => pos.set(id, { x, y: startY + i * (NODE_H + V_GAP) }));
+    nodeIds.forEach((id, i) => pos.set(id, { x, y: startY + i * (NODE_H + V_GAP), w }));
   }
 
   const latColor = (us: number) => {
@@ -798,52 +863,183 @@ function TunnelProbeTopology({
   const total = Array.from(byTo.values()).reduce((a, b) => a + b, 0);
   const totalColor = total / 1000 < 80 ? "#059669" : total / 1000 < 200 ? "#d97706" : "#e11d48";
 
+  // 适应容器
+  function fitToContainer() {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const cw = rect.width;
+    const ch = rect.height;
+    const s = clamp(Math.min(cw / svgW, ch / svgH) * 0.9, 0.15, 4);
+    setT({
+      scale: s,
+      tx: (cw - svgW * s) / 2,
+      ty: (ch - svgH * s) / 2,
+    });
+  }
+
+  // 滚轮缩放（向光标位置缩放）
+  function handleWheel(e: React.WheelEvent<HTMLDivElement>) {
+    e.preventDefault();
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    setT((prev) => {
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      const ns = clamp(prev.scale * factor, 0.15, 4);
+      return {
+        scale: ns,
+        tx: mx - (mx - prev.tx) * (ns / prev.scale),
+        ty: my - (my - prev.ty) * (ns / prev.scale),
+      };
+    });
+  }
+
+  // 拖拽开始
+  function handleMouseDown(e: React.MouseEvent<HTMLDivElement>) {
+    if (e.button !== 0) return;
+    dragRef.current = {
+      ox: e.clientX,
+      oy: e.clientY,
+      otx: t.tx,
+      oty: t.ty,
+    };
+  }
+
+  // 拖拽移动
+  function handleMouseMove(e: React.MouseEvent<HTMLDivElement>) {
+    if (!dragRef.current) return;
+    const { ox, oy, otx, oty } = dragRef.current;
+    setT((prev) => ({
+      ...prev,
+      tx: otx + (e.clientX - ox),
+      ty: oty + (e.clientY - oy),
+    }));
+  }
+
+  // 拖拽结束
+  function handleMouseUp() {
+    dragRef.current = null;
+  }
+
+  // 控制按钮缩放（以容器中心为基准）
+  function zoomBy(factor: number) {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const mx = rect.width / 2;
+    const my = rect.height / 2;
+    setT((prev) => {
+      const ns = clamp(prev.scale * factor, 0.15, 4);
+      return {
+        scale: ns,
+        tx: mx - (mx - prev.tx) * (ns / prev.scale),
+        ty: my - (my - prev.ty) * (ns / prev.scale),
+      };
+    });
+  }
+
   return (
     <div className="space-y-2">
-      <svg
-        viewBox={`0 0 ${svgW} ${svgH}`}
-        width={svgW} height={svgH}
-        className="mx-auto overflow-visible"
-        style={{ maxWidth: "100%" }}
+      {/* 控制栏 */}
+      <div className="flex items-center justify-end gap-1">
+        <button
+          type="button"
+          onClick={() => zoomBy(1.2)}
+          className="rounded border px-1.5 py-0.5 text-xs hover:bg-muted"
+          title="放大"
+        >
+          ＋
+        </button>
+        <button
+          type="button"
+          onClick={() => zoomBy(1 / 1.2)}
+          className="rounded border px-1.5 py-0.5 text-xs hover:bg-muted"
+          title="缩小"
+        >
+          －
+        </button>
+        <button
+          type="button"
+          onClick={fitToContainer}
+          className="rounded border px-1.5 py-0.5 text-xs hover:bg-muted"
+          title="适应窗口"
+        >
+          适应
+        </button>
+        <span className="w-10 text-right font-mono text-xs text-muted-foreground">
+          {Math.round(t.scale * 100)}%
+        </span>
+      </div>
+
+      {/* 可平移/缩放画布容器 */}
+      <div
+        ref={containerRef}
+        style={{ height: 300, overflow: "hidden", cursor: dragRef.current ? "grabbing" : "grab" }}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
       >
-        {edges.map((e, i) => {
-          const f = pos.get(e.from), t = pos.get(e.to);
-          if (!f || !t) return null;
-          const x1 = f.x + NODE_W, y1 = f.y + NODE_H / 2;
-          const x2 = t.x, y2 = t.y + NODE_H / 2;
-          const mx = (x1 + x2) / 2;
-          const color = e.ok ? latColor(e.us) : "#e11d48";
-          return (
-            <g key={i}>
-              <path
-                d={`M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`}
-                fill="none" stroke={color} strokeWidth={1.5} opacity={0.8}
-                strokeDasharray={e.ok ? undefined : "4 2"}
-              />
-              <text
-                x={mx} y={(y1 + y2) / 2 - 4}
-                textAnchor="middle" fontSize={9} fill={color}
-                fontFamily="ui-monospace,monospace" fontWeight={600}
-              >
-                {e.ok ? `${(e.us / 1000).toFixed(1)}ms` : "✗"}
-              </text>
-            </g>
-          );
-        })}
-        {[...pos.entries()].map(([id, { x, y }]) => (
-          <g key={id}>
-            <rect x={x} y={y} width={NODE_W} height={NODE_H} rx={6}
-              fill="hsl(var(--muted))" stroke="hsl(var(--border))" strokeWidth={1} />
-            <text
-              x={x + NODE_W / 2} y={y + NODE_H / 2 + 4}
-              textAnchor="middle" fontSize={11} fontWeight={500}
-              fill="hsl(var(--foreground))"
-            >
-              {(labels.get(id) ?? id).slice(0, 10)}
-            </text>
-          </g>
-        ))}
-      </svg>
+        <div
+          style={{
+            transform: `translate(${t.tx}px, ${t.ty}px) scale(${t.scale})`,
+            transformOrigin: "0 0",
+            willChange: "transform",
+          }}
+        >
+          <svg width={svgW} height={svgH} style={{ overflow: "visible" }}>
+            {/* 边 */}
+            {edges.map((e, i) => {
+              const f = pos.get(e.from);
+              const tgt = pos.get(e.to);
+              if (!f || !tgt) return null;
+              const x1 = f.x + f.w;
+              const y1 = f.y + NODE_H / 2;
+              const x2 = tgt.x;
+              const y2 = tgt.y + NODE_H / 2;
+              const mx = (x1 + x2) / 2;
+              const color = e.ok ? latColor(e.us) : "#e11d48";
+              const midY = (y1 + y2) / 2;
+              return (
+                <g key={i}>
+                  <path
+                    d={`M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`}
+                    fill="none" stroke={color} strokeWidth={1.5} opacity={0.8}
+                    strokeDasharray={e.ok ? undefined : "4 2"}
+                  />
+                  <text
+                    x={mx} y={midY - 4}
+                    textAnchor="middle" fontSize={9} fill={color}
+                    fontFamily="ui-monospace,monospace" fontWeight={600}
+                  >
+                    {e.ok ? `${(e.us / 1000).toFixed(1)}ms` : "✗"}
+                  </text>
+                </g>
+              );
+            })}
+
+            {/* 节点 */}
+            {[...pos.entries()].map(([id, { x, y, w }]) => (
+              <g key={id}>
+                <rect
+                  x={x} y={y} width={w} height={NODE_H} rx={6}
+                  fill="hsl(var(--muted))" stroke="hsl(var(--border))" strokeWidth={1}
+                />
+                <text
+                  x={x + w / 2} y={y + NODE_H / 2 + 4}
+                  textAnchor="middle" fontSize={11} fontWeight={500}
+                  fill="hsl(var(--foreground))"
+                >
+                  {labels.get(id) ?? id}
+                </text>
+              </g>
+            ))}
+          </svg>
+        </div>
+      </div>
+
+      {/* 合计延迟 */}
       {allOk && segments.length > 0 && (
         <div className="flex items-center justify-between border-t pt-2 text-sm">
           <span className="text-muted-foreground">合计</span>
@@ -852,11 +1048,21 @@ function TunnelProbeTopology({
           </span>
         </div>
       )}
+
+      {/* 错误信息 */}
       {segments.some((s) => !s.ok) && (
         <div className="rounded-md border border-rose-200 bg-rose-50/60 p-2 text-xs text-rose-700 dark:border-rose-900/40 dark:bg-rose-950/30 dark:text-rose-400">
           {segments.filter((s) => !s.ok).map((s, i) => (
             <div key={i} className="font-mono">{s.error}</div>
           ))}
+        </div>
+      )}
+
+      {/* 流式探测进行中提示 */}
+      {streaming && segments.length > 0 && (
+        <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
+          <span className="h-3 w-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+          探测中…
         </div>
       )}
     </div>

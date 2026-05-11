@@ -59,6 +59,7 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
             get(get_tunnel).put(update_tunnel).delete(delete_tunnel),
         )
         .route("/api/v1/tunnels/:id/probe", post(probe_tunnel))
+        .route("/api/v1/tunnels/:id/probe-stream", get(probe_tunnel_stream))
         .route(
             "/api/v1/user-tunnels",
             get(list_user_tunnels).post(create_user_tunnel),
@@ -2076,6 +2077,180 @@ async fn probe_tunnel(
         cache::set_json(&s.redis, &cache_key, &resp, 5).await;
     }
     Ok(Json(resp))
+}
+
+/// SSE 流式探测隧道：并行探测所有段，每完成一段立即推送
+async fn probe_tunnel_stream(State(s): State<AppState>, Path(id): Path<i64>) -> Response {
+    let rows: Vec<(i32, String, Vec<String>, i32, i32)> = match sqlx::query_as(
+        "SELECT th.hop_index, th.node_id, n.server_ips,
+                n.port_range_start, n.port_range_end
+           FROM tunnel_hops th
+           JOIN nodes n ON n.id = th.node_id
+          WHERE th.tunnel_id = $1
+          ORDER BY th.hop_index, th.node_id",
+    )
+    .bind(id)
+    .fetch_all(&s.db)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return ApiError::from(e).into_response(),
+    };
+
+    if rows.is_empty() {
+        return ApiError::new(StatusCode::NOT_FOUND, "隧道不存在或无节点").into_response();
+    }
+
+    struct LayerNode {
+        node_id: String,
+        ips: Vec<String>,
+        range_start: i32,
+        range_end: i32,
+    }
+    let mut layer_map: std::collections::BTreeMap<i32, Vec<LayerNode>> =
+        std::collections::BTreeMap::new();
+    for (hop, node_id, ips, rs, re) in rows {
+        layer_map.entry(hop).or_default().push(LayerNode {
+            node_id,
+            ips,
+            range_start: rs,
+            range_end: re,
+        });
+    }
+    let layers: Vec<Vec<LayerNode>> = layer_map.into_values().collect();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<TunnelProbeSegment>(64);
+    let probe_timeout = Duration::from_secs(8);
+    let db = s.db.clone();
+    let registry = s.registry.clone();
+
+    tokio::spawn(async move {
+        let mut futs = futures::stream::FuturesUnordered::<
+            std::pin::Pin<Box<dyn std::future::Future<Output = TunnelProbeSegment> + Send>>,
+        >::new();
+
+        // 跨层段：全部并行
+        for i in 0..layers.len().saturating_sub(1) {
+            for from in &layers[i] {
+                for next in &layers[i + 1] {
+                    let db2 = db.clone();
+                    let reg = registry.clone();
+                    let from_id = from.node_id.clone();
+                    let next_id = next.node_id.clone();
+                    let next_ips = next.ips.clone();
+                    let range_start = next.range_start;
+                    let range_end = next.range_end;
+
+                    futs.push(Box::pin(async move {
+                        let next_ip = match next_ips.iter().find(|s| !s.trim().is_empty()) {
+                            Some(ip) => ip.clone(),
+                            None => {
+                                return TunnelProbeSegment {
+                                    from_node: from_id,
+                                    to: next_id,
+                                    ok: false,
+                                    latency_us: 0,
+                                    error: "节点无可用 IP".into(),
+                                }
+                            }
+                        };
+
+                        let probe_port = match crate::ports::pick_free_port(
+                            &db2,
+                            &next_id,
+                            range_start + 1,
+                            range_end,
+                            &[],
+                        )
+                        .await
+                        {
+                            Ok(Some(p)) => p,
+                            _ => {
+                                return TunnelProbeSegment {
+                                    from_node: from_id,
+                                    to: next_id,
+                                    ok: false,
+                                    latency_us: 0,
+                                    error: "节点无可用探测端口".into(),
+                                }
+                            }
+                        };
+
+                        let bind_hold = probe_timeout + Duration::from_secs(5);
+                        let bind = reg
+                            .probe_with_kind(
+                                &next_id,
+                                format!("[::]:{probe_port}"),
+                                bind_hold,
+                                relay_proto::v1::ProbeKind::BindTcpHold,
+                            )
+                            .await;
+                        let bind_ok = matches!(&bind, Ok(r) if r.ok);
+                        if !bind_ok {
+                            return tunnel_probe_seg(
+                                from_id,
+                                next_id,
+                                bind.map(|r| relay_proto::v1::ProbeResult {
+                                    ok: false,
+                                    error: if r.error.is_empty() {
+                                        "bind 失败".into()
+                                    } else {
+                                        r.error
+                                    },
+                                    ..r
+                                }),
+                            );
+                        }
+
+                        let connect = reg
+                            .probe(&from_id, format!("{next_ip}:{probe_port}"), probe_timeout)
+                            .await;
+                        tunnel_probe_seg(from_id, next_id, connect)
+                    }));
+                }
+            }
+        }
+
+        // 最后一层公网可达性
+        if let Some(last_layer) = layers.last() {
+            for out in last_layer {
+                for target in [
+                    "8.8.8.8:443",
+                    "1.1.1.1:443",
+                    "bing.com:443",
+                    "google.com:443",
+                ] {
+                    let reg = registry.clone();
+                    let from = out.node_id.clone();
+                    let to = target.to_string();
+                    futs.push(Box::pin(async move {
+                        tunnel_probe_seg(
+                            from.clone(),
+                            to.clone(),
+                            reg.probe(&from, to, probe_timeout).await,
+                        )
+                    }));
+                }
+            }
+        }
+
+        while let Some(seg) = futures::StreamExt::next(&mut futs).await {
+            if tx.send(seg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    use tokio_stream::wrappers::ReceiverStream;
+    let stream = ReceiverStream::new(rx).map(|seg: TunnelProbeSegment| {
+        Ok::<_, Infallible>(match serde_json::to_string(&seg) {
+            Ok(j) => Event::default().data(j),
+            Err(_) => Event::default().comment("err"),
+        })
+    });
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(3)))
+        .into_response()
 }
 
 #[derive(Serialize, Deserialize)]
