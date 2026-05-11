@@ -49,12 +49,25 @@ export function ProbeTopology({
       return;
     }
     if (fittedRef.current) return;
-    const { w, h } = svgSizeRef.current;
-    if (!containerRef.current || w === 0 || h === 0) return;
-    fittedRef.current = true;
-    const rect = containerRef.current.getBoundingClientRect();
-    const s = clamp(Math.min(rect.width / w, rect.height / h) * 0.9, 0.15, 4);
-    setT({ scale: s, tx: (rect.width - w * s) / 2, ty: (rect.height - h * s) / 2 });
+    const el = containerRef.current;
+    if (!el) return;
+
+    const tryFit = () => {
+      const { w, h } = svgSizeRef.current;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || w === 0 || h === 0) return false;
+      fittedRef.current = true;
+      const fit = Math.min(rect.width / w, rect.height / h);
+      const s = clamp(fit >= 1 ? 1 : fit * 0.9, 0.15, 1);
+      setT({ scale: s, tx: (rect.width - w * s) / 2, ty: (rect.height - h * s) / 2 });
+      return true;
+    };
+
+    if (tryFit()) return;
+    // 弹窗动画期间宽度为 0，等容器有真实尺寸后再 fit
+    const ro = new ResizeObserver(() => { if (tryFit()) ro.disconnect(); });
+    ro.observe(el);
+    return () => ro.disconnect();
   }, [hops.length]);
 
   // 空 hops 且仍在 streaming 时展示等待提示
@@ -169,7 +182,8 @@ export function ProbeTopology({
     const rect = containerRef.current.getBoundingClientRect();
     const cw = rect.width;
     const ch = rect.height;
-    const s = clamp(Math.min(cw / svgW, ch / svgH) * 0.9, 0.15, 4);
+    const fit = Math.min(cw / svgW, ch / svgH);
+    const s = clamp(fit >= 1 ? 1 : fit * 0.9, 0.15, 1);
     setT({
       scale: s,
       tx: (cw - svgW * s) / 2,
