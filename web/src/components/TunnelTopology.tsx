@@ -12,6 +12,11 @@ function truncate(s: string): string {
   return s.length > 12 ? s.slice(0, 12) + "…" : s;
 }
 
+function resolveLabel(id: string, nodeNames: Record<string, string>): string {
+  const raw = nodeNames[id]?.trim();
+  return truncate(raw && raw.length > 0 ? raw : id.slice(0, 12));
+}
+
 export function TunnelTopology({ layers, nodeNames }: TunnelTopologyProps) {
   if (layers.length === 0) {
     return (
@@ -88,9 +93,11 @@ export function TunnelTopology({ layers, nodeNames }: TunnelTopologyProps) {
 
       {/* 节点框 */}
       {[...pos.entries()].map(([id, { x, y }]) => {
-        const label = truncate(displayNodeNames[id] ?? id.slice(0, 12));
+        const label = resolveLabel(id, displayNodeNames);
+        const fullLabel = displayNodeNames[id]?.trim() || id;
         return (
           <g key={id}>
+            <title>{fullLabel}</title>
             <rect
               x={x}
               y={y}
