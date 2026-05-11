@@ -666,6 +666,7 @@ fn apply_keepalive(stream: &TcpStream) -> std::io::Result<()> {
     SockRef::from(stream).set_tcp_keepalive(&ka)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn pipe_tcp(
     inbound: TcpStream,
     upstreams: Arc<Vec<SocketAddr>>,
