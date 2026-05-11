@@ -3864,22 +3864,23 @@ async fn node_traffic_stats_handler(
     State(s): State<AppState>,
     Query(q): Query<StatsHistoryQuery>,
 ) -> ApiResult<Json<Vec<NodeTrafficItem>>> {
-    let since = match q.period.as_deref() {
-        Some("7d") => "7 days",
-        Some("24h") => "24 hours",
-        Some("6h") => "6 hours",
-        _ => "1 hour",
+    let secs: i64 = match q.period.as_deref() {
+        Some("7d") => 7 * 24 * 3600,
+        Some("24h") => 24 * 3600,
+        Some("6h") => 6 * 3600,
+        _ => 3600,
     };
+    let since = chrono::Utc::now() - chrono::Duration::seconds(secs);
 
     use sqlx::Row;
     let rows = sqlx::query(
         "SELECT ns.node_id,
-                COALESCE(n.hostname, ns.node_id) AS hostname,
-                SUM(ns.bytes_in)::BIGINT          AS bytes_in,
-                SUM(ns.bytes_out)::BIGINT         AS bytes_out
+                COALESCE(n.hostname, ns.node_id)      AS hostname,
+                COALESCE(SUM(ns.bytes_in),  0)::BIGINT AS bytes_in,
+                COALESCE(SUM(ns.bytes_out), 0)::BIGINT AS bytes_out
            FROM node_stats ns
            LEFT JOIN nodes n ON n.id = ns.node_id
-          WHERE ns.ts >= now() - $1::interval
+          WHERE ns.ts >= $1
           GROUP BY ns.node_id, n.hostname
           ORDER BY bytes_in + bytes_out DESC",
     )

@@ -205,31 +205,35 @@ export default function Dashboard() {
       </div>
 
       {/* 节点流量分布 */}
-      {nodeTraffic.length > 0 && (
-        <div className="rounded-lg border p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">节点流量分布</h2>
-              <div className="flex items-center gap-1">
-                {(["1h", "6h", "24h", "7d"] as Period[]).map((p) => (
-                  <Button key={p} size="sm" variant={nodePeriod === p ? "default" : "ghost"}
-                    className="h-6 px-2 text-xs" onClick={() => setNodePeriod(p)}>
-                    {p === "1h" ? "1 小时" : p === "6h" ? "6 小时" : p === "24h" ? "24 小时" : "7 天"}
-                  </Button>
-                ))}
-              </div>
-            </div>
-            <div className="flex items-center gap-4 text-xs text-muted-foreground">
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: "hsl(var(--primary))" }} />
-                ↓ 下载
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: "#10b981" }} />
-                ↑ 上传
-              </span>
+      <div className="rounded-lg border p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">节点流量分布</h2>
+            <div className="flex items-center gap-1">
+              {(["1h", "6h", "24h", "7d"] as Period[]).map((p) => (
+                <Button key={p} size="sm" variant={nodePeriod === p ? "default" : "ghost"}
+                  className="h-6 px-2 text-xs" onClick={() => setNodePeriod(p)}>
+                  {p === "1h" ? "1 小时" : p === "6h" ? "6 小时" : p === "24h" ? "24 小时" : "7 天"}
+                </Button>
+              ))}
             </div>
           </div>
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: "hsl(var(--primary))" }} />
+              ↓ 下载
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: "#10b981" }} />
+              ↑ 上传
+            </span>
+          </div>
+        </div>
+        {nodeTraffic.length === 0 ? (
+          <div className="flex h-28 items-center justify-center text-sm text-muted-foreground">
+            暂无数据（数据每分钟写入一次）
+          </div>
+        ) : (
           <ResponsiveContainer width="100%" height={Math.max(120, nodeTraffic.length * 40)}>
             <BarChart
               data={nodeTraffic}
@@ -249,8 +253,8 @@ export default function Dashboard() {
               <Bar dataKey="bytes_out" name="上传" fill="#10b981" opacity={0.85} radius={[0, 3, 3, 0]} />
             </BarChart>
           </ResponsiveContainer>
-        </div>
-      )}
+        )}
+      </div>
 
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">节点状态</h2>
