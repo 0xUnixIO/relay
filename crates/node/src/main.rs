@@ -54,6 +54,19 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // 将进程软 fd 限制拉满到系统硬限制，避免高并发时因默认 1024 耗尽 fd
+    #[cfg(unix)]
+    unsafe {
+        let mut rl = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) == 0 {
+            rl.rlim_cur = rl.rlim_max;
+            libc::setrlimit(libc::RLIMIT_NOFILE, &rl);
+        }
+    }
+
     let _ = dotenvy::dotenv();
     relay_common::logging::init("relay-node");
 
