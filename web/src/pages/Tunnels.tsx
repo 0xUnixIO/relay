@@ -771,7 +771,10 @@ function TunnelProbeTopology({
       fittedRef.current = false;
       return;
     }
+    // 流结束时重置，确保最终布局（所有节点到齐后）再做一次 fit
+    if (!streaming) fittedRef.current = false;
     if (fittedRef.current) return;
+
     const el = containerRef.current;
     if (!el) return;
 
@@ -790,7 +793,7 @@ function TunnelProbeTopology({
     const ro = new ResizeObserver(() => { if (tryFit()) ro.disconnect(); });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [segments.length]);
+  }, [segments.length, streaming]);
 
   // 无数据且仍在流式探测时，展示等待提示
   if (segments.length === 0 && streaming) {

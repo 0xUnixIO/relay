@@ -48,7 +48,10 @@ export function ProbeTopology({
       fittedRef.current = false;
       return;
     }
+    // 流结束时重置，确保最终布局（所有节点到齐后）再做一次 fit
+    if (!streaming) fittedRef.current = false;
     if (fittedRef.current) return;
+
     const el = containerRef.current;
     if (!el) return;
 
@@ -64,11 +67,10 @@ export function ProbeTopology({
     };
 
     if (tryFit()) return;
-    // 弹窗动画期间宽度为 0，等容器有真实尺寸后再 fit
     const ro = new ResizeObserver(() => { if (tryFit()) ro.disconnect(); });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [hops.length]);
+  }, [hops.length, streaming]);
 
   // 空 hops 且仍在 streaming 时展示等待提示
   if (hops.length === 0) {
