@@ -27,21 +27,30 @@ pub fn spawn(db: PgPool) {
 }
 
 async fn run(db: &PgPool) -> sqlx::Result<()> {
+    // 从 system_config 读取可配置的保留天数，失败时回退默认值。
+    let retention_days: i32 =
+        sqlx::query_scalar("SELECT monitor_retention_days FROM system_config WHERE id = 1")
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(30)
+            .max(1);
+
     // 三张时序表均有 TimescaleDB retention policy（迁移 0004/0006/0007）。
     // 此 DELETE 在 hypertable 上幂等无害，原生 PG 部署时作为唯一清理机制。
-    for (table, col, interval) in [
-        ("forward_stats", "ts", "30 days"),
-        ("node_heartbeats", "ts", "30 days"),
-        ("node_availability", "recorded_at", "90 days"),
+    for (table, col, days) in [
+        ("forward_stats", "ts", retention_days),
+        ("node_heartbeats", "ts", retention_days),
+        ("node_availability", "recorded_at", 90),
     ] {
         let deleted = sqlx::query(&format!(
-            "DELETE FROM {table} WHERE {col} < now() - INTERVAL '{interval}'",
+            "DELETE FROM {table} WHERE {col} < now() - ({days} * INTERVAL '1 day')",
         ))
         .execute(db)
         .await?
         .rows_affected();
         if deleted > 0 {
-            tracing::info!(deleted, table, "pruned old time-series records");
+            tracing::info!(deleted, table, days, "pruned old time-series records");
         }
     }
 

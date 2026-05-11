@@ -171,6 +171,9 @@ pub struct ForwardView {
     /// nodes for DNS-LB). Empty when no entry hop.
     #[serde(default)]
     pub entry_addrs: Vec<String>,
+    /// 当 lb_strategy='best' 时，当前评分最优的上游地址（nil 表示暂无探测数据）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub best_exit_addr: Option<String>,
 }
 
 // ---------- User Groups ----------
@@ -233,4 +236,6 @@ pub struct SystemConfig {
     pub announcement_title: String,
     pub announcement_content: String,
     pub updated_at: DateTime<Utc>,
+    /// 监控数据（forward_stats / node_heartbeats）保留天数，1–3650，默认 30。
+    pub monitor_retention_days: i32,
 }

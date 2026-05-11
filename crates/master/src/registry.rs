@@ -323,7 +323,7 @@ pub async fn build_config_snapshot(db: &PgPool, node_id: &str) -> sqlx::Result<C
         }
     }
 
-    let forwards = hop_rows
+    let mut forwards: Vec<ForwardConfig> = hop_rows
         .into_iter()
         .map(
             |(

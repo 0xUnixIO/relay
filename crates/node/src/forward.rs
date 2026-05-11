@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -469,7 +469,14 @@ async fn start_tunnel(
 ) -> Result<tokio::task::JoinHandle<()>> {
     let listen: SocketAddr = spec.listen_addr.parse()?;
 
-    if spec.lb_strategy != "round_robin" && !spec.lb_strategy.is_empty() {
+    const KNOWN_LB: &[&str] = &[
+        "round_robin",
+        "random",
+        "primary_backup",
+        "least_latency",
+        "best",
+    ];
+    if !KNOWN_LB.contains(&spec.lb_strategy.as_str()) && !spec.lb_strategy.is_empty() {
         tracing::warn!(
             tunnel = %spec.id,
             strategy = %spec.lb_strategy,
@@ -480,19 +487,24 @@ async fn start_tunnel(
     let upstreams = Arc::new(resolved);
     let cursor = Arc::new(AtomicUsize::new(0));
 
-    // 后台 probe 任务：定期 TCP-connect 所有 upstream，记录延迟写入 probe_buf。
+    // EMA 延迟缓存：每个 upstream 一个 u64（微秒）。u64::MAX 表示暂无数据。
+    // alpha = 1/4：new_ema = (sample + old * 3) / 4
+    const PROBE_FAILURE_US: u64 = 5_000_000; // 失败探测惩罚 5s
+    let latency_map: Arc<RwLock<Vec<u64>>> = Arc::new(RwLock::new(vec![u64::MAX; upstreams.len()]));
+
+    // 后台 probe 任务：定期 TCP-connect 所有 upstream，更新 EMA 缓存并上报给 master。
     {
         let upstreams = upstreams.clone();
         let upstream_addrs = spec.upstream_addrs.clone();
         let forward_id = spec.forward_id.clone();
         let probe_buf = probe_buf.clone();
         let cancel = cancel.clone();
+        let latency_map = latency_map.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(300));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            // 首次 tick 立即执行
-            interval.tick().await;
             loop {
+                // 首次 tick 立即触发（interval 第一个 tick 无延迟），后续每 300s 一次
                 tokio::select! {
                     _ = cancel.cancelled() => break,
                     _ = interval.tick() => {
@@ -502,10 +514,24 @@ async fn start_tunnel(
                                 Duration::from_secs(5),
                                 TcpStream::connect(upstream),
                             ).await;
+                            // latency_us=0 上报给 master 表示失败（master 存 NULL）
                             let latency_us = match &result {
                                 Ok(Ok(_)) => t0.elapsed().as_micros() as u64,
                                 _ => 0,
                             };
+                            // EMA 用 result 判断成功/失败，避免把极低延迟（<1μs）误判为失败
+                            let sample_us = match &result {
+                                Ok(Ok(_)) => latency_us.max(1),
+                                _ => PROBE_FAILURE_US,
+                            };
+                            if let Ok(mut map) = latency_map.write() {
+                                let old = map[idx];
+                                map[idx] = if old == u64::MAX {
+                                    sample_us
+                                } else {
+                                    (sample_us + old.saturating_mul(3)) / 4
+                                };
+                            }
                             let addr = upstream_addrs.get(idx)
                                 .cloned()
                                 .unwrap_or_else(|| upstream.to_string());
@@ -545,6 +571,8 @@ async fn start_tunnel(
                 counters,
                 spec.acl.clone(),
                 rate_limiter,
+                spec.lb_strategy.clone(),
+                latency_map,
             ))
         }
         Protocol::Udp => {
@@ -558,6 +586,8 @@ async fn start_tunnel(
                 counters,
                 spec.acl.clone(),
                 rate_limiter,
+                spec.lb_strategy.clone(),
+                latency_map,
             ))
         }
     };
@@ -575,6 +605,8 @@ async fn run_tcp(
     counters: Arc<Counters>,
     acl: Acl,
     rate_limiter: Arc<Option<RateLimiter>>,
+    lb_strategy: String,
+    latency_map: Arc<RwLock<Vec<u64>>>,
 ) {
     loop {
         let permit = match sem.clone().acquire_owned().await {
@@ -598,11 +630,13 @@ async fn run_tcp(
                         let upstreams = upstreams.clone();
                         let cursor = cursor.clone();
                         let rate_limiter = rate_limiter.clone();
+                        let lb = lb_strategy.clone();
+                        let lmap = latency_map.clone();
                         counters.total.fetch_add(1, Ordering::Relaxed);
                         counters.active.fetch_add(1, Ordering::Relaxed);
                         tokio::spawn(async move {
                             let _permit = permit;
-                            let res = pipe_tcp(inbound, upstreams, cursor, &counters, &cancel, &rate_limiter).await;
+                            let res = pipe_tcp(inbound, upstreams, cursor, &counters, &cancel, &rate_limiter, &lb, &lmap).await;
                             counters.active.fetch_sub(1, Ordering::Relaxed);
                             if let Err(e) = res {
                                 tracing::debug!(tunnel = %id, %peer, error = %e, "tcp session ended");
@@ -639,11 +673,32 @@ async fn pipe_tcp(
     counters: &Counters,
     cancel: &CancellationToken,
     rate_limiter: &Arc<Option<RateLimiter>>,
+    lb_strategy: &str,
+    latency_map: &RwLock<Vec<u64>>,
 ) -> std::io::Result<()> {
     inbound.set_nodelay(true)?;
     apply_keepalive(&inbound)?;
     let n = upstreams.len();
-    let start = cursor.fetch_add(1, Ordering::Relaxed) % n;
+    if n == 0 {
+        return Err(std::io::Error::other("no upstreams configured"));
+    }
+    let start = match lb_strategy {
+        "primary_backup" => 0,
+        "least_latency" | "best" => {
+            // 冷启动期（全部 u64::MAX）降级为 round-robin，避免全打 index 0
+            latency_map
+                .read()
+                .ok()
+                .and_then(|m| {
+                    if m.iter().all(|&v| v == u64::MAX) {
+                        return None;
+                    }
+                    m.iter().enumerate().min_by_key(|(_, &v)| v).map(|(i, _)| i)
+                })
+                .unwrap_or_else(|| cursor.fetch_add(1, Ordering::Relaxed) % n)
+        }
+        _ => cursor.fetch_add(1, Ordering::Relaxed) % n,
+    };
 
     let up = {
         let mut last_err: Option<std::io::Error> = None;
@@ -829,6 +884,8 @@ async fn run_udp(
     counters: Arc<Counters>,
     acl: Acl,
     rate_limiter: Arc<Option<RateLimiter>>,
+    lb_strategy: String,
+    latency_map: Arc<RwLock<Vec<u64>>>,
 ) {
     let sock = Arc::new(sock);
     let sessions: Arc<Mutex<HashMap<SocketAddr, UdpSession>>> =
@@ -894,9 +951,22 @@ async fn run_udp(
                 } else if g.len() >= UDP_MAX_SESSIONS {
                     tracing::warn!(tunnel = %id, "udp session cap reached, dropping packet");
                     None
+                } else if upstreams.is_empty() {
+                    tracing::warn!(tunnel = %id, "no upstreams, dropping udp packet");
+                    None
                 } else {
-                    // Round-robin upstream selection per new UDP session.
-                    let upstream = upstreams[cursor.fetch_add(1, Ordering::Relaxed) % upstreams.len()];
+                    let n = upstreams.len();
+                    let up_idx = match lb_strategy.as_str() {
+                        "primary_backup" => 0,
+                        "least_latency" | "best" => {
+                            latency_map.read().ok().and_then(|m| {
+                                if m.iter().all(|&v| v == u64::MAX) { return None; }
+                                m.iter().enumerate().min_by_key(|(_, &v)| v).map(|(i, _)| i)
+                            }).unwrap_or_else(|| cursor.fetch_add(1, Ordering::Relaxed) % n)
+                        }
+                        _ => cursor.fetch_add(1, Ordering::Relaxed) % n,
+                    };
+                    let upstream = upstreams[up_idx];
                     let bind: SocketAddr = if upstream.is_ipv4() {
                         "0.0.0.0:0".parse().unwrap()
                     } else {

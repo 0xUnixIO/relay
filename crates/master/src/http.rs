@@ -1345,7 +1345,13 @@ async fn probe_node_port(
 
 const VALID_PROTOCOLS: [&str; 2] = ["tcp", "udp"];
 const VALID_IP_PREF: [&str; 3] = ["", "ipv4", "ipv6"];
-const VALID_LB: [&str; 4] = ["round_robin", "random", "least_latency", "primary_backup"];
+const VALID_LB: [&str; 5] = [
+    "round_robin",
+    "random",
+    "least_latency",
+    "primary_backup",
+    "best",
+];
 
 /// 校验并规范化 tunnel 协议集合：lowercase + dedupe + sort，必须是 ["tcp","udp"] 的非空子集。
 fn validate_protocols(input: &[String]) -> Result<Vec<String>, ApiError> {
@@ -1389,7 +1395,7 @@ fn validate_lb(p: &str) -> Result<(), ApiError> {
     if !VALID_LB.contains(&p) {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "lb_strategy 必须是 round_robin 或 primary_backup",
+            "lb_strategy 必须是 round_robin / primary_backup / best 之一",
         ));
     }
     Ok(())
@@ -2692,6 +2698,26 @@ async fn build_forward_view(
     }
     let entry_addr = entry_addrs.first().cloned();
 
+    // best/least_latency 策略时查询当前最优出口（最近 5 分钟探测得分最低的 upstream）
+    let best_exit_addr: Option<String> =
+        if matches!(r.f.lb_strategy.as_str(), "best" | "least_latency") {
+            sqlx::query_scalar(
+                "SELECT upstream_addr
+               FROM forward_probe_samples
+              WHERE forward_id = $1
+                AND probed_at >= now() - INTERVAL '5 minutes'
+              GROUP BY upstream_addr
+              ORDER BY AVG(COALESCE(latency_us::float8, 5000000)) ASC
+              LIMIT 1",
+            )
+            .bind(r.f.id)
+            .fetch_optional(db)
+            .await
+            .unwrap_or(None)
+        } else {
+            None
+        };
+
     Ok(ForwardView {
         forward: r.f,
         user_id: r.user_id,
@@ -2705,6 +2731,7 @@ async fn build_forward_view(
         active_connections,
         entry_addr,
         entry_addrs,
+        best_exit_addr,
     })
 }
 
@@ -3310,7 +3337,8 @@ async fn build_public_status(s: &AppState) -> Result<PublicStatusResp, sqlx::Err
     let net_speeds = s.series.all_node_net_speeds().await;
 
     let cfg: Option<crate::models::SystemConfig> = sqlx::query_as(
-        "SELECT announcement_enabled, announcement_title, announcement_content, updated_at
+        "SELECT announcement_enabled, announcement_title, announcement_content, updated_at,
+                monitor_retention_days
            FROM system_config WHERE id = 1",
     )
     .fetch_optional(&s.db)
@@ -3645,11 +3673,11 @@ async fn forward_probe_stats(
     let rows = sqlx::query(
         "SELECT
              upstream_addr,
-             COUNT(*)                                                        AS sample_count,
-             AVG(latency_us)  FILTER (WHERE latency_us IS NOT NULL)         AS avg_latency_us,
-             STDDEV(latency_us) FILTER (WHERE latency_us IS NOT NULL)       AS jitter_us,
+             COUNT(*)                                                             AS sample_count,
+             AVG(latency_us)  FILTER (WHERE latency_us IS NOT NULL)::float8   AS avg_latency_us,
+             STDDEV(latency_us) FILTER (WHERE latency_us IS NOT NULL)::float8  AS jitter_us,
              1.0 - COUNT(*) FILTER (WHERE latency_us IS NOT NULL)::float8
-                   / NULLIF(COUNT(*), 0)                                     AS loss_rate,
+                   / NULLIF(COUNT(*), 0)                                        AS loss_rate,
              MAX(probed_at)                                                  AS last_probed_at
          FROM forward_probe_samples
          WHERE forward_id = $1
@@ -3704,7 +3732,7 @@ async fn forward_probe_series(
         "SELECT
              upstream_addr,
              to_timestamp(floor(extract(epoch from probed_at) / $1) * $1) AS ts,
-             AVG(latency_us) FILTER (WHERE latency_us IS NOT NULL)         AS avg_latency_us,
+             AVG(latency_us) FILTER (WHERE latency_us IS NOT NULL)::float8  AS avg_latency_us,
              COUNT(*) FILTER (WHERE latency_us IS NULL)::float8
                  / NULLIF(COUNT(*), 0)::float8                             AS loss_rate
          FROM forward_probe_samples
@@ -3760,7 +3788,8 @@ async fn public_status_stream(
 
 async fn get_config(State(s): State<AppState>) -> ApiResult<Json<crate::models::SystemConfig>> {
     let cfg: crate::models::SystemConfig = sqlx::query_as(
-        "SELECT announcement_enabled, announcement_title, announcement_content, updated_at
+        "SELECT announcement_enabled, announcement_title, announcement_content, updated_at,
+                monitor_retention_days
            FROM system_config WHERE id = 1",
     )
     .fetch_one(&s.db)
@@ -3773,24 +3802,36 @@ pub struct UpdateConfigReq {
     pub announcement_enabled: Option<bool>,
     pub announcement_title: Option<String>,
     pub announcement_content: Option<String>,
+    pub monitor_retention_days: Option<i32>,
 }
 
 async fn update_config(
     State(s): State<AppState>,
     Json(req): Json<UpdateConfigReq>,
 ) -> ApiResult<Json<crate::models::SystemConfig>> {
+    if let Some(days) = req.monitor_retention_days {
+        if !(1..=3650).contains(&days) {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "monitor_retention_days 须在 1–3650 之间",
+            ));
+        }
+    }
     let cfg: crate::models::SystemConfig = sqlx::query_as(
         "UPDATE system_config SET
-            announcement_enabled = COALESCE($1, announcement_enabled),
-            announcement_title   = COALESCE($2, announcement_title),
-            announcement_content = COALESCE($3, announcement_content),
-            updated_at           = now()
+            announcement_enabled   = COALESCE($1, announcement_enabled),
+            announcement_title     = COALESCE($2, announcement_title),
+            announcement_content   = COALESCE($3, announcement_content),
+            monitor_retention_days = COALESCE($4, monitor_retention_days),
+            updated_at             = now()
           WHERE id = 1
-          RETURNING announcement_enabled, announcement_title, announcement_content, updated_at",
+          RETURNING announcement_enabled, announcement_title, announcement_content, updated_at,
+                    monitor_retention_days",
     )
     .bind(req.announcement_enabled)
     .bind(req.announcement_title)
     .bind(req.announcement_content)
+    .bind(req.monitor_retention_days)
     .fetch_one(&s.db)
     .await?;
     Ok(Json(cfg))
