@@ -327,6 +327,9 @@ export default function UsersPage() {
                 <PopoverContent className="w-auto p-0" align="start">
                   <Calendar
                     mode="single"
+                    captionLayout="dropdown"
+                    fromYear={new Date().getFullYear()}
+                    toYear={new Date().getFullYear() + 15}
                     selected={form.expires_at ? new Date(form.expires_at) : undefined}
                     onSelect={(date) => {
                       setForm({ ...form, expires_at: date ? date.toLocaleDateString("sv") : "" });

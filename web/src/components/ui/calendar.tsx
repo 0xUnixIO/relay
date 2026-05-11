@@ -14,6 +14,9 @@ function Calendar({ className, classNames, showOutsideDays = true, ...props }: C
         month: "flex flex-col gap-4",
         month_caption: "flex justify-center pt-1 relative items-center w-full",
         caption_label: "text-sm font-medium",
+        dropdowns: "flex gap-1 items-center",
+        dropdown: "appearance-none bg-transparent border-0 text-sm font-medium cursor-pointer hover:text-foreground focus:outline-none",
+        dropdown_root: "relative",
         nav: "flex items-center gap-1",
         button_previous: cn(
           "absolute left-1 h-7 w-7 bg-transparent p-0 opacity-50 hover:opacity-100",
