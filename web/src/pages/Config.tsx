@@ -35,6 +35,8 @@ export default function ConfigPage() {
   const [title, setTitle] = useState<string | undefined>(undefined);
   const [content, setContent] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
+  const [retentionDays, setRetentionDays] = useState<number | undefined>(undefined);
+  const [retentionSaving, setRetentionSaving] = useState(false);
   const [channelSaving, setChannelSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [masterMirrorUrl, setMasterMirrorUrl] = useState("");
@@ -89,6 +91,22 @@ export default function ConfigPage() {
       toast.error(e?.message ?? "保存失败");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const effectiveRetentionDays = retentionDays ?? cfg?.monitor_retention_days ?? 30;
+  const saveRetention = async () => {
+    const days = Math.max(1, Math.min(3650, Math.floor(effectiveRetentionDays)));
+    setRetentionSaving(true);
+    try {
+      await Api.updateConfig({ monitor_retention_days: days });
+      await mutate();
+      setRetentionDays(undefined);
+      toast.success("监控数据保留策略已保存");
+    } catch (e: any) {
+      toast.error(e?.message ?? "保存失败");
+    } finally {
+      setRetentionSaving(false);
     }
   };
 
@@ -368,6 +386,37 @@ export default function ConfigPage() {
           <Button onClick={save} disabled={saving}>
             {saving ? "保存中…" : "保存"}
           </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">监控数据保留</CardTitle>
+          <CardDescription>
+            forward_stats 和 node_heartbeats 的保留天数（1–3650）。超出时限的历史数据每小时清理一次。
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number"
+              min={1}
+              max={3650}
+              className="w-32"
+              value={effectiveRetentionDays}
+              onChange={(e) => {
+                const v = Math.max(1, Math.min(3650, Math.floor(Number(e.target.value) || 30)));
+                setRetentionDays(v);
+              }}
+            />
+            <span className="text-sm text-muted-foreground">天</span>
+            <Button
+              onClick={saveRetention}
+              disabled={retentionSaving || retentionDays === undefined}
+            >
+              {retentionSaving ? "保存中…" : "保存"}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

@@ -228,6 +228,8 @@ export interface Forward {
   port_warnings?: string[];
   entry_addr: string | null;
   entry_addrs?: string[];
+  /** lb_strategy='best' 时当前评分最优的上游地址 */
+  best_exit_addr?: string | null;
 }
 
 export interface CreateForwardReq {
@@ -543,12 +545,14 @@ export interface SystemConfig {
   announcement_title: string;
   announcement_content: string;
   updated_at: string;
+  monitor_retention_days: number;
 }
 
 export interface UpdateConfigReq {
   announcement_enabled?: boolean;
   announcement_title?: string;
   announcement_content?: string;
+  monitor_retention_days?: number;
 }
 
 // ---------- Public Status ----------

@@ -382,6 +382,16 @@ export default function ForwardsPage() {
                             </div>
                           </TooltipContent>
                         </Tooltip>
+                        {(f.lb_strategy === "best" || f.lb_strategy === "least_latency") && f.best_exit_addr && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <div className="mt-0.5 text-emerald-600 dark:text-emerald-400 truncate max-w-[11rem] cursor-default">
+                                ↗ {f.best_exit_addr}
+                              </div>
+                            </TooltipTrigger>
+                            <TooltipContent>当前最优出口：{f.best_exit_addr}</TooltipContent>
+                          </Tooltip>
+                        )}
                       </TableCell>
                       {/* 下载列 — 移动端隐藏 */}
                       <TableCell className="hidden sm:table-cell text-right font-mono text-xs whitespace-nowrap">
@@ -586,7 +596,7 @@ export default function ForwardsPage() {
                   <SelectContent>
                     <SelectItem value="round_robin">轮询</SelectItem>
                     <SelectItem value="random">随机</SelectItem>
-                    <SelectItem value="least_latency">最低延迟</SelectItem>
+                    <SelectItem value="least_latency">最低延迟（探测自动排序）</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
