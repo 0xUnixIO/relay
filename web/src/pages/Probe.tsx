@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import useSWR from "swr";
-import { Activity, CheckCircle, RefreshCw, XCircle } from "lucide-react";
+import { CheckCircle, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
-import { ProbeTopology } from "@/components/ProbeTopology";
-import { Api, type Forward, type ForwardProbeHop, type PublicStatus, type PublicNodeStatus } from "@/lib/api";
+import {
+  AreaChart, Area, XAxis, YAxis, Tooltip as ReTooltip,
+  ResponsiveContainer, CartesianGrid, Legend,
+} from "recharts";
+import { Api, type Forward, type PublicStatus, type PublicNodeStatus } from "@/lib/api";
 import { fmtBytes, timeAgo } from "@/lib/utils";
-import { toast } from "sonner";
 
 function fmtRate(bps: number): string {
   if (bps < 1024) return `${bps.toFixed(0)} B/s`;
@@ -114,10 +116,102 @@ function NodeCard({ node }: { node: PublicNodeStatus }) {
 
 // ── 主页面 ────────────────────────────────────────────────────
 
+type Period = "1h" | "24h" | "7d";
+
+const PERIOD_LABELS: Record<Period, string> = { "1h": "1 小时", "24h": "24 小时", "7d": "7 天" };
+
+const UPSTREAM_COLORS = ["#059669", "#0ea5e9", "#f59e0b", "#e11d48", "#8b5cf6"];
+
+function ForwardLatencyChart({ forward }: { forward: Forward }) {
+  const [period, setPeriod] = useState<Period>("24h");
+  const { data, isLoading } = useSWR(
+    `probe-series-${forward.id}-${period}`,
+    () => Api.getForwardProbeSeries(forward.id, period),
+    { refreshInterval: 60_000 },
+  );
+
+  const upstreams = [...new Set((data ?? []).map((s) => s.upstream_addr))];
+
+  // 将平铺的行转为 { ts, [addr]: latencyMs } 格式
+  const byTs = new Map<string, Record<string, number | null>>();
+  for (const s of data ?? []) {
+    if (!byTs.has(s.ts)) byTs.set(s.ts, {});
+    byTs.get(s.ts)![s.upstream_addr] = s.avg_latency_us != null ? s.avg_latency_us / 1000 : null;
+  }
+  const chartData = [...byTs.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([ts, vals]) => {
+      const d = new Date(ts);
+      const label = period === "7d"
+        ? `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:00`
+        : `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+      return { ts: label, ...vals };
+    });
+
+  return (
+    <Card>
+      <CardContent className="p-4 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="font-medium truncate">{forward.name}</div>
+          <div className="flex gap-1 shrink-0">
+            {(["1h", "24h", "7d"] as Period[]).map((p) => (
+              <Button key={p} size="sm" variant={period === p ? "default" : "outline"}
+                className="h-7 px-2 text-xs" onClick={() => setPeriod(p)}>
+                {PERIOD_LABELS[p]}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        {isLoading ? (
+          <div className="h-36 flex items-center justify-center text-sm text-muted-foreground animate-pulse">加载中…</div>
+        ) : chartData.length === 0 ? (
+          <div className="h-36 flex items-center justify-center text-sm text-muted-foreground">
+            暂无探测数据（约 5 分钟后首次记录）
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height={140}>
+            <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 0, bottom: 4 }}>
+              <defs>
+                {upstreams.map((addr, i) => (
+                  <linearGradient key={addr} id={`pg-${i}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor={UPSTREAM_COLORS[i % UPSTREAM_COLORS.length]} stopOpacity={0.25} />
+                    <stop offset="95%" stopColor={UPSTREAM_COLORS[i % UPSTREAM_COLORS.length]} stopOpacity={0} />
+                  </linearGradient>
+                ))}
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+              <XAxis dataKey="ts" tick={{ fontSize: 10 }} tickLine={false} interval="preserveStartEnd" />
+              <YAxis tick={{ fontSize: 10 }} width={40} tickLine={false} axisLine={false}
+                tickFormatter={(v) => `${v}ms`} />
+              <ReTooltip
+                formatter={(v, name) => [`${Number(v).toFixed(2)} ms`, name]}
+                contentStyle={{ background: "hsl(var(--background))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
+              />
+              {upstreams.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
+              {upstreams.map((addr, i) => (
+                <Area
+                  key={addr}
+                  type="monotone"
+                  dataKey={addr}
+                  name={addr}
+                  stroke={UPSTREAM_COLORS[i % UPSTREAM_COLORS.length]}
+                  fill={`url(#pg-${i})`}
+                  strokeWidth={1.5}
+                  dot={false}
+                  connectNulls={false}
+                />
+              ))}
+            </AreaChart>
+          </ResponsiveContainer>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function ProbePage() {
   const { data: forwards = [] } = useSWR("forwards", Api.listForwards);
-  const [probing, setProbing] = useState<Record<string, boolean>>({});
-  const [results, setResults] = useState<Record<string, ForwardProbeHop[]>>({});
   const [statusData, setStatusData] = useState<PublicStatus | null>(null);
   const [statusError, setStatusError] = useState(false);
 
@@ -129,21 +223,6 @@ export default function ProbePage() {
     es.onerror = () => setStatusError(true);
     return () => es.close();
   }, []);
-
-  const probe = async (f: Forward) => {
-    setProbing((p) => ({ ...p, [f.id]: true }));
-    try {
-      const hops = await Api.probeForward(f.id);
-      setResults((r) => ({ ...r, [f.id]: hops }));
-    } catch (e: any) {
-      toast.error(e?.message ?? "探测失败");
-    } finally {
-      setProbing((p) => ({ ...p, [f.id]: false }));
-    }
-  };
-
-  const anyProbing = Object.values(probing).some(Boolean);
-  const probeAll = () => { for (const f of forwards) probe(f); };
 
   const onlineCount = statusData?.nodes.filter((n) => n.online).length ?? 0;
   const totalCount = statusData?.nodes.length ?? 0;
@@ -186,62 +265,14 @@ export default function ProbePage() {
         )}
       </div>
 
-      {/* 转发探测 */}
+      {/* 转发延迟历史 */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground/60">转发探测</h2>
-          <Button onClick={probeAll} disabled={forwards.length === 0 || anyProbing} variant="outline" size="sm">
-            <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${anyProbing ? "animate-spin" : ""}`} />
-            全部探测
-          </Button>
-        </div>
-
+        <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground/60">上游延迟历史</h2>
         {forwards.length === 0 ? (
-          <EmptyState icon={Activity} title="暂无转发" description="创建转发后可在此发起延迟探测。" />
+          <EmptyState icon={CheckCircle} title="暂无转发" description="创建转发后此处将展示上游延迟曲线。" />
         ) : (
           <div className="space-y-3">
-            {forwards.map((f) => {
-              const result = results[f.id];
-              const isProbing = probing[f.id];
-              const hasError = result?.some((h) => !h.ok);
-
-              return (
-                <Card key={f.id}>
-                  <CardContent className="p-4 space-y-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        {result && (
-                          <span className={`h-2 w-2 rounded-full shrink-0 ${hasError ? "bg-red-500" : "bg-emerald-500"}`} />
-                        )}
-                        <span className="font-medium truncate">{f.name}</span>
-                        <span className="font-mono text-xs text-muted-foreground truncate hidden sm:block">
-                          :{f.in_port}
-                          {f.remote_addrs?.[0] && ` → ${f.remote_addrs[0]}`}
-                          {f.remote_addrs?.length > 1 && ` +${f.remote_addrs.length - 1}`}
-                        </span>
-                      </div>
-                      <Button size="sm" variant="outline" className="shrink-0" onClick={() => probe(f)} disabled={isProbing}>
-                        <Activity className={`mr-1.5 h-3.5 w-3.5 ${isProbing ? "animate-pulse" : ""}`} />
-                        {isProbing ? "探测中…" : result ? "重新探测" : "探测"}
-                      </Button>
-                    </div>
-
-                    {result && (
-                      <div className="space-y-2">
-                        <ProbeTopology hops={result} />
-                        {hasError && (
-                          <div className="rounded-md border border-rose-200 bg-rose-50/60 p-2 text-xs text-rose-700 dark:border-rose-900/40 dark:bg-rose-950/30 dark:text-rose-400">
-                            {result.filter((h) => !h.ok).map((h, i) => (
-                              <div key={i} className="font-mono">{h.error}</div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              );
-            })}
+            {forwards.map((f) => <ForwardLatencyChart key={f.id} forward={f} />)}
           </div>
         )}
       </div>

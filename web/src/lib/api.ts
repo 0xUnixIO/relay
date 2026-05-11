@@ -533,6 +533,9 @@ export const Api = {
 
   getForwardProbeStats: (id: string) =>
     api<UpstreamProbeStats[]>(`/api/v1/forwards/${id}/probe-stats`),
+
+  getForwardProbeSeries: (id: string, period: "1h" | "24h" | "7d" = "24h") =>
+    api<ProbeSample[]>(`/api/v1/forwards/${id}/probe-series?period=${period}`),
 };
 
 export interface SystemConfig {
@@ -715,6 +718,13 @@ export interface ForwardStatBucket {
 }
 
 // ---------- Forward Probe Stats ----------
+
+export interface ProbeSample {
+  ts: string;
+  upstream_addr: string;
+  avg_latency_us: number | null;
+  loss_rate: number;
+}
 
 export interface UpstreamProbeStats {
   upstream_addr: string;
