@@ -9,10 +9,9 @@ import { ProtocolSetBadge } from "@/components/ui/protocol-set-badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useState } from "react";
 import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
+  AreaChart, Area,
+  BarChart, Bar,
+  XAxis, YAxis,
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
@@ -78,6 +77,21 @@ export default function Dashboard() {
   const offline = nodes.filter((n) => !isOnline(n));
   const enabled = forwards.filter((f) => f.effective_enabled);
   const totalConns = forwards.reduce((s, f) => s + (f.active_connections ?? 0), 0);
+
+  // 各节点流量聚合（所有经过该节点的转发流量之和）
+  const nodeTraffic = nodes
+    .map((n) => {
+      let bytes_in = 0, bytes_out = 0;
+      for (const f of forwards) {
+        if (f.ports.some((p) => p.node_id === n.id)) {
+          bytes_in  += f.in_flow_bytes;
+          bytes_out += f.out_flow_bytes;
+        }
+      }
+      return { name: n.hostname || n.id.slice(0, 8), bytes_in, bytes_out };
+    })
+    .filter((n) => n.bytes_in > 0 || n.bytes_out > 0)
+    .sort((a, b) => (b.bytes_in + b.bytes_out) - (a.bytes_in + a.bytes_out));
 
   // "active" = effective_enabled and entry node online.
   const active = enabled.filter((f) => {
@@ -191,6 +205,44 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* 节点流量分布 */}
+      {nodeTraffic.length > 0 && (
+        <div className="rounded-lg border p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">节点流量分布</h2>
+            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: "hsl(var(--primary))" }} />
+                ↓ 下载
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: "#10b981" }} />
+                ↑ 上传
+              </span>
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={Math.max(120, nodeTraffic.length * 40)}>
+            <BarChart
+              data={nodeTraffic}
+              layout="vertical"
+              margin={{ top: 0, right: 8, left: 0, bottom: 0 }}
+              barCategoryGap="30%"
+            >
+              <XAxis type="number" tick={{ fontSize: 10 }} tickLine={false} axisLine={false}
+                tickFormatter={(v: number) => fmtBytes(v)} width={64} />
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} tickLine={false}
+                axisLine={false} width={80} />
+              <Tooltip
+                formatter={(v, name) => [fmtBytes(Number(v)), name === "bytes_in" ? "下载" : "上传"]}
+                contentStyle={{ background: "hsl(var(--background))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
+              />
+              <Bar dataKey="bytes_in" name="下载" fill="hsl(var(--primary))" opacity={0.85} radius={[0, 3, 3, 0]} />
+              <Bar dataKey="bytes_out" name="上传" fill="#10b981" opacity={0.85} radius={[0, 3, 3, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
       <div className="space-y-3">
         <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">节点状态</h2>
         {nodes.length === 0 ? (
@@ -269,16 +321,11 @@ export default function Dashboard() {
           <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide">活跃转发</h2>
           <div className="rounded-lg border divide-y">
             {active.map((f) => {
-              const firstUpstream = f.remote_addrs?.[0] ?? "—";
               return (
                 <div key={f.id} className="flex items-center justify-between px-4 py-3 text-sm">
                   <div className="flex items-center gap-3 min-w-0">
                     <ProtocolSetBadge protocols={f.protocols} />
                     <span className="font-medium truncate">{f.name}</span>
-                    <span className="font-mono text-xs text-muted-foreground hidden sm:block truncate">
-                      :{f.in_port} → {firstUpstream}
-                      {f.remote_addrs?.length > 1 && ` +${f.remote_addrs.length - 1}`}
-                    </span>
                   </div>
                   <div className="flex items-center gap-4 shrink-0 ml-4">
                     {f.active_connections > 0 && (
