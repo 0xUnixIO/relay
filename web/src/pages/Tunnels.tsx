@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useConfirm } from "@/hooks/useConfirm";
 import useSWR from "swr";
 import {
@@ -763,6 +763,22 @@ function TunnelProbeTopology({
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragOrigin | null>(null);
   const [t, setT] = useState<Transform>({ scale: 1, tx: 0, ty: 0 });
+  const fittedRef = useRef(false);
+  const svgSizeRef = useRef({ w: 0, h: 0 });
+
+  useEffect(() => {
+    if (segments.length === 0) {
+      fittedRef.current = false;
+      return;
+    }
+    if (fittedRef.current) return;
+    const { w, h } = svgSizeRef.current;
+    if (!containerRef.current || w === 0 || h === 0) return;
+    fittedRef.current = true;
+    const rect = containerRef.current.getBoundingClientRect();
+    const s = Math.min(1, Math.min(rect.width / w, rect.height / h) * 0.9);
+    setT({ scale: s, tx: (rect.width - w * s) / 2, ty: (rect.height - h * s) / 2 });
+  }, [segments.length]);
 
   // 无数据且仍在流式探测时，展示等待提示
   if (segments.length === 0 && streaming) {
@@ -838,6 +854,7 @@ function TunnelProbeTopology({
 
   const svgW = curX - H_GAP + PAD;
   const svgH = PAD * 2 + maxPerLayer * NODE_H + (maxPerLayer - 1) * V_GAP;
+  svgSizeRef.current = { w: svgW, h: svgH };
 
   // 计算每个节点坐标
   const pos = new Map<string, { x: number; y: number; w: number }>();

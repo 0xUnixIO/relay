@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ForwardProbeHop } from "@/lib/api";
 
 // 将 scale 夹在 [min, max] 范围内
@@ -40,6 +40,22 @@ export function ProbeTopology({
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragOrigin | null>(null);
   const [t, setT] = useState<Transform>({ scale: 1, tx: 0, ty: 0 });
+  const fittedRef = useRef(false);
+  const svgSizeRef = useRef({ w: 0, h: 0 });
+
+  useEffect(() => {
+    if (hops.length === 0) {
+      fittedRef.current = false;
+      return;
+    }
+    if (fittedRef.current) return;
+    const { w, h } = svgSizeRef.current;
+    if (!containerRef.current || w === 0 || h === 0) return;
+    fittedRef.current = true;
+    const rect = containerRef.current.getBoundingClientRect();
+    const s = clamp(Math.min(rect.width / w, rect.height / h) * 0.9, 0.15, 4);
+    setT({ scale: s, tx: (rect.width - w * s) / 2, ty: (rect.height - h * s) / 2 });
+  }, [hops.length]);
 
   // 空 hops 且仍在 streaming 时展示等待提示
   if (hops.length === 0) {
@@ -116,6 +132,7 @@ export function ProbeTopology({
 
   const svgW = curX - H_GAP + PAD; // 最后一层右侧 PAD
   const svgH = PAD * 2 + maxPerLayer * NODE_H + (maxPerLayer - 1) * V_GAP;
+  svgSizeRef.current = { w: svgW, h: svgH };
 
   // 计算每个节点中心坐标
   const pos = new Map<string, { x: number; y: number; w: number }>();
