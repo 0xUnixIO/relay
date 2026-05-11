@@ -32,12 +32,6 @@ import { getRole } from "@/lib/auth";
 import { toast } from "sonner";
 
 
-const LB_LABELS: Record<string, string> = {
-  round_robin: "轮询",
-  random: "随机",
-  least_latency: "最低延迟",
-  primary_backup: "主备",
-};
 
 function parseUpstreamAddrs(text: string): string[] | string {
   const lines = text.split(/[\n,]/).map((l) => l.trim()).filter(Boolean);
@@ -377,12 +371,7 @@ export default function ForwardsPage() {
                             >
                               <span className="truncate min-w-0">{f.remote_addrs.slice(0, 1).join(", ")}</span>
                               {f.remote_addrs.length > 1 && (
-                                <>
-                                  <Badge variant="secondary" className="shrink-0">+{f.remote_addrs.length - 1}</Badge>
-                                  <span className="shrink-0 text-muted-foreground">
-                                    {LB_LABELS[f.lb_strategy] ?? f.lb_strategy}
-                                  </span>
-                                </>
+                                <Badge variant="secondary" className="shrink-0">+{f.remote_addrs.length - 1}</Badge>
                               )}
                               <Check className={`h-3 w-3 shrink-0 ${copied === `${f.id}-upstream` ? "text-emerald-500" : "invisible"}`} />
                             </span>
