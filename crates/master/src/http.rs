@@ -1960,7 +1960,7 @@ async fn probe_tunnel(
     }
     let layers: Vec<Vec<LayerNode>> = layer_map.into_values().collect();
 
-    let probe_timeout = Duration::from_secs(8);
+    let probe_timeout = Duration::from_secs(1);
     let mut segments: Vec<TunnelProbeSegment> = Vec::new();
 
     // 跨层段：layers[i] 的每个节点 × layers[i+1] 的每个节点
@@ -2003,7 +2003,7 @@ async fn probe_tunnel(
                     }
                 };
 
-                let bind_hold = probe_timeout + Duration::from_secs(5);
+                let bind_hold = probe_timeout + Duration::from_secs(2);
                 let bind = s
                     .registry
                     .probe_with_kind(
@@ -2120,7 +2120,7 @@ async fn probe_tunnel_stream(State(s): State<AppState>, Path(id): Path<i64>) -> 
     let layers: Vec<Vec<LayerNode>> = layer_map.into_values().collect();
 
     let (tx, rx) = tokio::sync::mpsc::channel::<TunnelProbeSegment>(64);
-    let probe_timeout = Duration::from_secs(8);
+    let probe_timeout = Duration::from_secs(1);
     let db = s.db.clone();
     let registry = s.registry.clone();
 
@@ -2176,7 +2176,7 @@ async fn probe_tunnel_stream(State(s): State<AppState>, Path(id): Path<i64>) -> 
                             }
                         };
 
-                        let bind_hold = probe_timeout + Duration::from_secs(5);
+                        let bind_hold = probe_timeout + Duration::from_secs(2);
                         let bind = reg
                             .probe_with_kind(
                                 &next_id,
@@ -2387,7 +2387,7 @@ async fn probe_forward(
 
     let segments = build_probe_segments(&s.db, id).await?;
 
-    let timeout = std::time::Duration::from_secs(5);
+    let timeout = std::time::Duration::from_secs(1);
     let futures: Vec<_> = segments
         .into_iter()
         .map(|seg| {
@@ -2457,7 +2457,7 @@ async fn probe_forward_stream(
     let (tx, rx) = tokio::sync::mpsc::channel::<ForwardProbeHop>(32);
     // FuturesUnordered 并发探测，先完先发
     let registry = s.registry.clone();
-    let timeout = std::time::Duration::from_secs(5);
+    let timeout = std::time::Duration::from_secs(1);
     tokio::spawn(async move {
         let mut futs = futures::stream::FuturesUnordered::new();
         for seg in segments {
