@@ -1,17 +1,12 @@
 import useSWR from "swr";
 import ReactMarkdown from "react-markdown";
+import { fmtBytes } from "@/lib/utils";
 import { Api } from "@/lib/api";
 import { Network, Megaphone } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { ProtocolSetBadge } from "@/components/ui/protocol-set-badge";
 import { EmptyState } from "@/components/ui/empty-state";
 
-function fmtBytes(n: number): string {
-  const u = ["B", "KB", "MB", "GB", "TB"];
-  let v = n, i = 0;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(v < 10 ? 1 : 0)} ${u[i]}`;
-}
 
 export default function UserDashboard() {
   const { data: forwards = [] } = useSWR("forwards", Api.listForwards);

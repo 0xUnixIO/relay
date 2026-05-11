@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import useSWR from "swr";
-import { timeAgo } from "@/lib/utils";
+import { timeAgo, fmtBytes } from "@/lib/utils";
 import { useNavigate } from "react-router-dom";
 import { Plus, Copy, Check, Search, Cpu, MemoryStick, Network, DatabaseZap, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -25,12 +25,6 @@ const MIRROR_PRESETS = [
   { label: "moeyy.xyz", url: "https://github.moeyy.xyz/" },
 ];
 
-function fmtBytes(n: number): string {
-  const u = ["B", "KB", "MB", "GB", "TB"];
-  let v = n, i = 0;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(v < 10 ? 1 : 0)} ${u[i]}`;
-}
 
 interface NodeStats {
   tcpConns: number;

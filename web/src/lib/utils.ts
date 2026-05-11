@@ -5,6 +5,13 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+export function fmtBytes(n: number): string {
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let v = n, i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v < 10 ? 1 : 0)} ${u[i]}`;
+}
+
 export function timeAgo(dateStr: string): string {
   const s = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
   if (s < 60) return `${s} 秒前`;

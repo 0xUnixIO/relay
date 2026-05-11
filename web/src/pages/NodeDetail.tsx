@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import useSWR from "swr";
-import { timeAgo } from "@/lib/utils";
+import { timeAgo, fmtBytes } from "@/lib/utils";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, RefreshCw, Copy, Check, Save, Plus, X, ArrowUp, ArrowDown, ArrowUpCircle, Trash2, MoreHorizontal } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -48,16 +48,7 @@ function isOnline(n: NodeInfo): boolean {
   return Date.now() - new Date(n.last_seen_at).getTime() < 15_000;
 }
 
-function fmtBytes(n: number): string {
-  const u = ["B", "KB", "MB", "GB", "TB"];
-  let v = n;
-  let i = 0;
-  while (v >= 1024 && i < u.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(v < 10 ? 1 : 0)}${u[i]}`;
-}
+
 
 // 从累计计数器样本计算每秒增量
 function rates(

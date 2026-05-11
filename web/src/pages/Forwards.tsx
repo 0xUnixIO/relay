@@ -27,15 +27,10 @@ import {
 import {
   Api, type Forward, type Tunnel, type NodeInfo, type ForwardStatBucket,
 } from "@/lib/api";
+import { fmtBytes } from "@/lib/utils";
 import { getRole } from "@/lib/auth";
 import { toast } from "sonner";
 
-function fmtBytes(n: number): string {
-  const u = ["B", "KB", "MB", "GB", "TB"];
-  let v = n, i = 0;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(v < 10 ? 1 : 0)} ${u[i]}`;
-}
 
 const LB_LABELS: Record<string, string> = {
   round_robin: "轮询",
@@ -730,12 +725,6 @@ function ForwardStatsChart({ forwardId }: { forwardId: string }) {
     return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
   };
 
-  const fmtBytes = (n: number) => {
-    if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} GB`;
-    if (n >= 1048576)    return `${(n / 1048576).toFixed(1)} MB`;
-    if (n >= 1024)       return `${(n / 1024).toFixed(1)} KB`;
-    return `${n} B`;
-  };
 
   const chartData = data.map((b) => ({
     ts: fmt(b.ts),

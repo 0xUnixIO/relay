@@ -575,11 +575,6 @@ export interface PublicStatus {
   announcement_content: string;
 }
 
-export async function fetchPublicStatus(): Promise<PublicStatus> {
-  const res = await fetch("/api/v1/status");
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
 
 // ---------- Upgrade ----------
 

@@ -1,4 +1,4 @@
-import { timeAgo } from "@/lib/utils";
+import { timeAgo, fmtBytes } from "@/lib/utils";
 import { Link } from "react-router-dom";
 import { Server, Network, Zap, Activity } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -22,12 +22,6 @@ function isOnline(n: NodeInfo): boolean {
   return Date.now() - new Date(n.last_seen_at).getTime() < 15_000;
 }
 
-function fmtBytes(n: number): string {
-  const u = ["B", "KB", "MB", "GB", "TB"];
-  let v = n, i = 0;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(v < 10 ? 1 : 0)} ${u[i]}`;
-}
 
 function MiniBar({ value, max, color }: { value: number; max: number; color: string }) {
   const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;

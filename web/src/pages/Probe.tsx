@@ -6,24 +6,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ProbeTopology } from "@/components/ProbeTopology";
 import { Api, type Forward, type ForwardProbeHop, type PublicStatus, type PublicNodeStatus } from "@/lib/api";
+import { fmtBytes, timeAgo } from "@/lib/utils";
 import { toast } from "sonner";
-
-// ── 节点状态相关工具函数 ──────────────────────────────────────
-
-function timeAgo(iso: string): string {
-  const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (sec < 60) return `${sec}s 前`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m 前`;
-  return `${Math.floor(min / 60)}h 前`;
-}
-
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 ** 3) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 ** 3).toFixed(1)} GB`;
-}
 
 function fmtRate(bps: number): string {
   if (bps < 1024) return `${bps.toFixed(0)} B/s`;
