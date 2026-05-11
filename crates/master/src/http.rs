@@ -3031,6 +3031,8 @@ async fn get_forward(
 
 #[derive(Deserialize)]
 pub struct UpdateForwardReq {
+    #[serde(default, with = "crate::snowflake::as_str_opt")]
+    pub tunnel_id: Option<i64>,
     pub name: Option<String>,
     pub in_port: Option<i32>,
     pub remote_addrs: Option<Vec<String>>,
@@ -3053,7 +3055,105 @@ async fn update_forward(
     if let Some(lb) = req.lb_strategy.as_deref() {
         validate_lb(lb)?;
     }
-    if let Some(new_port) = req.in_port {
+
+    if let Some(new_tunnel_id) = req.tunnel_id {
+        // 换隧道：重新分配端口，通知新旧节点。
+        let tunnel_row: Option<(Vec<String>,)> =
+            sqlx::query_as("SELECT protocols FROM tunnels WHERE id = $1")
+                .bind(new_tunnel_id)
+                .fetch_optional(&s.db)
+                .await?;
+        let (protocols,) =
+            tunnel_row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "隧道不存在"))?;
+
+        let user_id = caller_id(&claims)?;
+        if claims.role != "admin" {
+            let allowed: Option<(i64,)> = sqlx::query_as(
+                "SELECT id FROM user_tunnels
+                  WHERE user_id = $1 AND tunnel_id = $2 AND enabled = true",
+            )
+            .bind(user_id)
+            .bind(new_tunnel_id)
+            .fetch_optional(&s.db)
+            .await?;
+            if allowed.is_none() {
+                return Err(ApiError::new(StatusCode::FORBIDDEN, "无权使用此隧道"));
+            }
+        }
+
+        // 记录旧节点，用于隧道迁移完成后推送"删除"配置。
+        let old_nodes: Vec<(String,)> =
+            sqlx::query_as("SELECT DISTINCT node_id FROM forward_ports WHERE forward_id = $1")
+                .bind(id)
+                .fetch_all(&s.db)
+                .await?;
+
+        let user_tunnel_id: i64 = sqlx::query_scalar(
+            "INSERT INTO user_tunnels (id, user_id, tunnel_id)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (user_id, tunnel_id) DO UPDATE SET updated_at = now()
+             RETURNING id",
+        )
+        .bind(crate::snowflake::next_id())
+        .bind(user_id)
+        .bind(new_tunnel_id)
+        .fetch_one(&s.db)
+        .await?;
+
+        let proto_slice: Vec<&str> = protocols.iter().map(|s| s.as_str()).collect();
+        let mut tx = s.db.begin().await?;
+
+        sqlx::query("DELETE FROM forward_ports WHERE forward_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE forwards SET user_tunnel_id = $2, in_port = 1 WHERE id = $1")
+            .bind(id)
+            .bind(user_tunnel_id)
+            .execute(&mut *tx)
+            .await?;
+
+        crate::ports::allocate_forward_ports(&mut tx, id, new_tunnel_id, &proto_slice, req.in_port)
+            .await?;
+
+        let (entry_port,): (i32,) = sqlx::query_as(
+            "SELECT DISTINCT listen_port FROM forward_ports
+              WHERE forward_id = $1 AND hop_index = 0",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE forwards SET in_port = $2 WHERE id = $1")
+            .bind(id)
+            .bind(entry_port)
+            .execute(&mut *tx)
+            .await?;
+
+        for (nid,) in &old_nodes {
+            sqlx::query("UPDATE nodes SET tunnels_version = tunnels_version + 1 WHERE id = $1")
+                .bind(nid)
+                .execute(&mut *tx)
+                .await?;
+        }
+        let new_nodes: Vec<(String,)> =
+            sqlx::query_as("SELECT DISTINCT node_id FROM forward_ports WHERE forward_id = $1")
+                .bind(id)
+                .fetch_all(&mut *tx)
+                .await?;
+        for (nid,) in &new_nodes {
+            sqlx::query("UPDATE nodes SET tunnels_version = tunnels_version + 1 WHERE id = $1")
+                .bind(nid)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+
+        // 旧节点此 forward 已不存在，推送最新配置（会发现该 forward 消失）。
+        for (nid,) in &old_nodes {
+            s.registry.push_config(&s.db, nid).await;
+        }
+    } else if let Some(new_port) = req.in_port {
+        // 仅改端口（隧道不变）。
         let (cur_port,): (i32,) = sqlx::query_as("SELECT in_port FROM forwards WHERE id = $1")
             .bind(id)
             .fetch_one(&s.db)
@@ -3072,6 +3172,7 @@ async fn update_forward(
             crate::ports::reallocate_layer_port(&s.db, id, 0, &proto_refs, Some(new_port)).await?;
         }
     }
+
     sqlx::query(
         "UPDATE forwards SET
             name            = COALESCE($2, name),

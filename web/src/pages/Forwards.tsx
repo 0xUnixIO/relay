@@ -200,6 +200,7 @@ export default function ForwardsPage() {
       if (editing) {
         const inPort = form.in_port.trim() ? Number(form.in_port) : undefined;
         await Api.updateForward(editing.id, {
+          tunnel_id: form.tunnel_id !== editing.tunnel_id ? form.tunnel_id : undefined,
           name: form.name,
           in_port: inPort,
           remote_addrs: parsed,
@@ -523,8 +524,23 @@ export default function ForwardsPage() {
               </div>
             )}
             {editing && (
-              <div className="text-xs text-muted-foreground">
-                隧道：{editing.tunnel_name}
+              <div className="space-y-1.5">
+                <Label>隧道</Label>
+                <Select
+                  value={form.tunnel_id}
+                  onValueChange={(v) => setForm({ ...form, tunnel_id: v })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="选择隧道…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {tunnels.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.name} · {(t.protocols ?? []).map((p) => p.toUpperCase()).join("+")}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

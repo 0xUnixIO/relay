@@ -244,6 +244,7 @@ export interface CreateForwardReq {
 }
 
 export interface UpdateForwardReq {
+  tunnel_id?: string;
   name?: string;
   in_port?: number;
   remote_addrs?: string[];
