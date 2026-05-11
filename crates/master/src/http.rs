@@ -3882,7 +3882,7 @@ async fn node_traffic_stats_handler(
            LEFT JOIN nodes n ON n.id = ns.node_id
           WHERE ns.ts >= $1
           GROUP BY ns.node_id, n.hostname
-          ORDER BY bytes_in + bytes_out DESC",
+          ORDER BY SUM(ns.bytes_in) + SUM(ns.bytes_out) DESC",
     )
     .bind(since)
     .fetch_all(&s.db)
