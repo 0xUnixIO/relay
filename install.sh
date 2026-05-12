@@ -320,15 +320,12 @@ if ! id relay >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin relay
 fi
 
-log "installing $DATA_DIR/$BIN_NAME"
+log "installing $BIN_LINK"
 mkdir -p "$DATA_DIR"
 chown relay:relay "$DATA_DIR"
-chmod 0711 "$DATA_DIR"
-install -m 0755 "$DIR/$BIN_NAME" "$DATA_DIR/$BIN_NAME.new"
-chown relay:relay "$DATA_DIR/$BIN_NAME.new"
-mv -f "$DATA_DIR/$BIN_NAME.new" "$DATA_DIR/$BIN_NAME"
-ln -sfn "$DATA_DIR/$BIN_NAME" "${BIN_LINK}.new"
-mv -Tf "${BIN_LINK}.new" "$BIN_LINK"
+chmod 0700 "$DATA_DIR"
+install -m 0755 "$DIR/$BIN_NAME" "${BIN_LINK}.new"
+mv -f "${BIN_LINK}.new" "$BIN_LINK"
 
 # ── TimescaleDB 无感迁移（仅在 update 且使用内置 Docker Postgres 时触发）────────
 # pg16 数据目录格式与 timescale/timescaledb:latest-pg16 完全兼容，直接换镜像即可。
