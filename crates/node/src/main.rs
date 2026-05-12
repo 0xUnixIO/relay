@@ -399,7 +399,7 @@ async fn run_probe(req: ProbeRequest) -> ProbeResult {
             let parsed = req.target.parse::<std::net::SocketAddr>();
             match parsed
                 .map_err(anyhow::Error::from)
-                .and_then(crate::forward::bind_tcp_listener)
+                .and_then(|a| crate::forward::bind_tcp_listener(a, false))
             {
                 Ok(listener) => {
                     drop(listener);
@@ -422,7 +422,7 @@ async fn run_probe(req: ProbeRequest) -> ProbeResult {
             let parsed = req.target.parse::<std::net::SocketAddr>();
             match parsed
                 .map_err(anyhow::Error::from)
-                .and_then(crate::forward::bind_tcp_listener)
+                .and_then(|a| crate::forward::bind_tcp_listener(a, false))
             {
                 Ok(listener) => {
                     tokio::spawn(async move {
@@ -448,7 +448,7 @@ async fn run_probe(req: ProbeRequest) -> ProbeResult {
             let parsed = req.target.parse::<std::net::SocketAddr>();
             match parsed
                 .map_err(anyhow::Error::from)
-                .and_then(crate::forward::bind_udp_socket)
+                .and_then(|a| crate::forward::bind_udp_socket(a, false))
             {
                 Ok(sock) => {
                     drop(sock);

@@ -229,6 +229,11 @@ pub enum ProbeError {
 pub async fn build_config_snapshot(db: &PgPool, node_id: &str) -> sqlx::Result<ConfigUpdate> {
     use relay_proto::v1::Protocol;
 
+    let (listen_stack,): (String,) = sqlx::query_as("SELECT listen_stack FROM nodes WHERE id = $1")
+        .bind(node_id)
+        .fetch_one(db)
+        .await?;
+
     // Layered DAG: 单一跳可能由多个节点组成（DNS-LB / fan-in），同层共享
     // listen_port（由 0007 的 deferrable trigger 保证）。两阶段读取：
     //
@@ -377,7 +382,12 @@ pub async fn build_config_snapshot(db: &PgPool, node_id: &str) -> sqlx::Result<C
                         "udp" => Protocol::Udp as i32,
                         _ => Protocol::Tcp as i32,
                     },
-                    listen_addr: format!("[::]:{listen_port}"),
+                    listen_addr: if listen_stack == "v4" {
+                        format!("0.0.0.0:{listen_port}")
+                    } else {
+                        format!("[::]:{listen_port}")
+                    },
+                    v6_only: listen_stack == "v6",
                     upstream_addrs,
                     lb_strategy,
                     max_connections: maxc as u32,

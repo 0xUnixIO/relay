@@ -98,10 +98,9 @@ export default function TunnelsPage() {
   };
 
   const submit = async () => {
-    const pathLocked = !!editing && editing.forward_count > 0;
-    const protocolsLocked = pathLocked;
+    const protocolsLocked = !!editing && editing.forward_count > 0;
     const activeLayers = form.layers.filter((l) => l.length > 0);
-    if (!form.name.trim() || (!pathLocked && activeLayers.length === 0)) {
+    if (!form.name.trim() || activeLayers.length === 0) {
       toast.error("请填写名称并至少添加一个节点");
       return;
     }
@@ -119,7 +118,7 @@ export default function TunnelsPage() {
           in_ip: form.in_ip || undefined,
           enabled: form.enabled,
           ...(protocolsLocked ? {} : { protocols: form.protocols }),
-          ...(pathLocked ? {} : { layers: activeLayers }),
+          layers: activeLayers,
         });
       } else {
         await Api.createTunnel({
@@ -391,16 +390,15 @@ export default function TunnelsPage() {
             </div>
 
             {/* 第三行：链路配置（HopEditor） */}
+            {!!editing && editing.forward_count > 0 && (
+              <p className="text-sm text-amber-600 dark:text-amber-400">
+                已有 {editing.forward_count} 个转发使用此隧道，修改路径后转发将在下次重连时生效。
+              </p>
+            )}
             <HopEditor
               nodes={nodes}
               layers={form.layers}
               onChange={(ls) => setForm({ ...form, layers: ls })}
-              disabled={!!editing && editing.forward_count > 0}
-              disabledReason={
-                editing && editing.forward_count > 0
-                  ? `已有 ${editing.forward_count} 个转发使用此隧道，路径已锁定。如需修改请先删除相关转发。`
-                  : undefined
-              }
             />
 
             {/* 高级设置（可折叠） */}

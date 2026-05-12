@@ -953,6 +953,7 @@ pub struct UpdateNodeReq {
     pub expires_at: Option<Option<DateTime<chrono::Utc>>>,
     pub monthly_price: Option<Option<f64>>,
     pub website: Option<String>,
+    pub listen_stack: Option<String>,
 }
 
 async fn update_node(
@@ -990,6 +991,15 @@ async fn update_node(
         }
     }
 
+    if let Some(ls) = req.listen_stack.as_deref() {
+        if !matches!(ls, "dual" | "v4" | "v6") {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "listen_stack 必须为 dual / v4 / v6",
+            ));
+        }
+    }
+
     let row: Option<Node> = sqlx::query_as(
         "UPDATE nodes SET
             hostname         = COALESCE($2, hostname),
@@ -1002,6 +1012,7 @@ async fn update_node(
             expires_at       = CASE WHEN $10::BOOLEAN THEN $11 ELSE expires_at END,
             monthly_price    = CASE WHEN $12::BOOLEAN THEN $13 ELSE monthly_price END,
             website          = COALESCE($14, website),
+            listen_stack     = COALESCE($15, listen_stack),
             updated_at       = now()
           WHERE id = $1 RETURNING *",
     )
@@ -1019,6 +1030,7 @@ async fn update_node(
     .bind(req.monthly_price.is_some())
     .bind(req.monthly_price.flatten())
     .bind(req.website)
+    .bind(req.listen_stack)
     .fetch_optional(&s.db)
     .await?;
     let row = row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "资源不存在"))?;
@@ -1738,23 +1750,6 @@ async fn update_tunnel(
         None
     };
 
-    if path_change {
-        let in_use: (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM forwards f
-               JOIN user_tunnels ut ON ut.id = f.user_tunnel_id
-              WHERE ut.tunnel_id = $1",
-        )
-        .bind(id)
-        .fetch_one(&s.db)
-        .await?;
-        if in_use.0 > 0 {
-            return Err(ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "已有转发使用此隧道，无法修改路径；请先删除相关转发",
-            ));
-        }
-    }
-
     if let Some(new_protocols) = &normalized_protocols {
         let current: (Vec<String>,) = sqlx::query_as("SELECT protocols FROM tunnels WHERE id = $1")
             .bind(id)
@@ -1823,6 +1818,86 @@ async fn update_tunnel(
         }
     }
     tx.commit().await?;
+
+    // 路径变更：对所有使用该隧道的 forward 重新分配端口并推送配置
+    if path_change {
+        let forward_rows: Vec<(i64, i32)> = sqlx::query_as(
+            "SELECT f.id, f.in_port
+               FROM forwards f
+               JOIN user_tunnels ut ON ut.id = f.user_tunnel_id
+              WHERE ut.tunnel_id = $1",
+        )
+        .bind(id)
+        .fetch_all(&s.db)
+        .await?;
+
+        let proto_slice: Vec<&str> = t.protocols.iter().map(|s| s.as_str()).collect();
+
+        for (fid, old_in_port) in &forward_rows {
+            // 记录旧节点（forward_ports 尚未删除，仍指向旧路径）
+            let old_nodes: Vec<(String,)> =
+                sqlx::query_as("SELECT DISTINCT node_id FROM forward_ports WHERE forward_id = $1")
+                    .bind(fid)
+                    .fetch_all(&s.db)
+                    .await
+                    .unwrap_or_default();
+
+            let mut ftx = s.db.begin().await?;
+
+            sqlx::query("DELETE FROM forward_ports WHERE forward_id = $1")
+                .bind(fid)
+                .execute(&mut *ftx)
+                .await?;
+
+            // 尝试保留原入口端口；若新路径入口节点冲突则自动分配
+            let alloc = crate::ports::allocate_forward_ports(
+                &mut ftx,
+                *fid,
+                id,
+                &proto_slice,
+                Some(*old_in_port),
+            )
+            .await;
+            if alloc.is_err() {
+                crate::ports::allocate_forward_ports(&mut ftx, *fid, id, &proto_slice, None)
+                    .await?;
+            }
+
+            // 同步 forwards.in_port 为实际分配的入口端口
+            let (entry_port,): (i32,) = sqlx::query_as(
+                "SELECT DISTINCT listen_port FROM forward_ports
+                  WHERE forward_id = $1 AND hop_index = 0",
+            )
+            .bind(fid)
+            .fetch_one(&mut *ftx)
+            .await?;
+            sqlx::query("UPDATE forwards SET in_port = $2 WHERE id = $1")
+                .bind(fid)
+                .bind(entry_port)
+                .execute(&mut *ftx)
+                .await?;
+
+            ftx.commit().await?;
+
+            // 旧节点推送（清除旧 forward 配置），新节点推送（应用新配置）
+            for (nid,) in &old_nodes {
+                s.registry.push_config(&s.db, nid).await;
+            }
+            let new_nodes: Vec<(String,)> =
+                sqlx::query_as("SELECT DISTINCT node_id FROM forward_ports WHERE forward_id = $1")
+                    .bind(fid)
+                    .fetch_all(&s.db)
+                    .await
+                    .unwrap_or_default();
+            for (nid,) in &new_nodes {
+                s.registry.push_config(&s.db, nid).await;
+            }
+        }
+
+        if !forward_rows.is_empty() {
+            crate::scheduler::kick(s.db.clone(), s.registry.clone());
+        }
+    }
 
     // If enabled flipped, push affected nodes.
     if req.enabled.is_some() {
@@ -2988,15 +3063,16 @@ async fn build_forward_view(
 
     let active_client_ips = active_conns.get(&r.f.id.to_string()).await;
 
-    // 所有跳节点都已回执当前 tunnels_version 则视为已同步
+    // 该 forward 自身所有 forward_ports 行均已被节点回执（last_applied_at >= updated_at）
+    // 则视为已同步，避免其他 forward 的变更误触发本 forward 的同步中状态
     let synced: bool = sqlx::query_scalar(
-        "SELECT NOT EXISTS (
-             SELECT 1 FROM forward_ports fp
-             JOIN nodes n ON n.id = fp.node_id
-             WHERE fp.forward_id = $1
-               AND n.tunnels_version != n.last_applied_version
-         ) AND EXISTS (
+        "SELECT EXISTS (
              SELECT 1 FROM forward_ports WHERE forward_id = $1
+         ) AND NOT EXISTS (
+             SELECT 1 FROM forward_ports fp
+              JOIN forwards f ON f.id = fp.forward_id
+             WHERE fp.forward_id = $1
+               AND (fp.last_applied_at IS NULL OR fp.last_applied_at < f.updated_at)
          )",
     )
     .bind(r.f.id)

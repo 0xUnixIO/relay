@@ -104,6 +104,7 @@ export interface NodeInfo {
   cert_not_after: string | null;
   created_at: string;
   updated_at: string;
+  listen_stack?: string;
   capabilities?: string[];
 }
 

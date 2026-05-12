@@ -344,24 +344,29 @@ export default function Dashboard() {
                     {f.active_connections > 0 && (
                       <span className="text-sm text-emerald-500 tabular-nums">{f.active_connections} 连接</span>
                     )}
-                    {f.active_client_ips && f.active_client_ips.length > 0 && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span className="flex items-center gap-1 text-xs text-sky-500 cursor-default tabular-nums">
-                            <Globe className="h-3 w-3" />
-                            {f.active_client_ips.length} IP
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent className="font-mono text-xs max-w-xs">
-                          <div className="space-y-0.5">
-                            {f.active_client_ips.slice(0, 20).map((ip) => <div key={ip}>{ip}</div>)}
-                            {f.active_client_ips.length > 20 && (
-                              <div className="text-muted-foreground">…还有 {f.active_client_ips.length - 20} 个</div>
-                            )}
-                          </div>
-                        </TooltipContent>
-                      </Tooltip>
-                    )}
+                    {f.active_client_ips && f.active_client_ips.length > 0 && (() => {
+                      const uniqueIps = [...new Set(f.active_client_ips.map((ip) =>
+                        ip.startsWith("::ffff:") ? ip.slice(7) : ip,
+                      ))];
+                      return (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="flex items-center gap-1 text-xs text-sky-500 cursor-default tabular-nums">
+                              <Globe className="h-3 w-3" />
+                              {uniqueIps.length} IP
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent className="font-mono text-xs max-w-xs">
+                            <div className="space-y-0.5">
+                              {uniqueIps.slice(0, 20).map((ip) => <div key={ip}>{ip}</div>)}
+                              {uniqueIps.length > 20 && (
+                                <div className="text-muted-foreground">…还有 {uniqueIps.length - 20} 个</div>
+                              )}
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+                      );
+                    })()}
                     <span className="font-mono text-xs text-muted-foreground hidden sm:flex gap-1.5">
                       <span title="入站">↓{fmtBytes(f.in_flow_bytes)}</span>
                       <span title="出站">↑{fmtBytes(f.out_flow_bytes)}</span>

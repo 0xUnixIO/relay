@@ -67,11 +67,11 @@ impl RateLimiter {
     }
 }
 
-/// Bind a dual-stack TCP listener. For IPv6 sockets we explicitly clear
-/// `IPV6_V6ONLY` so a single socket accepts both v4 and v6 connections
-/// on the same port — Linux defaults to dual-stack but macOS / *BSD
-/// don't, so we set it explicitly for portable behaviour.
-pub fn bind_tcp_listener(addr: std::net::SocketAddr) -> Result<TcpListener> {
+/// Bind a TCP listener.
+/// - IPv4 addr → IPv4-only socket.
+/// - IPv6 addr + `v6_only=false` → dual-stack (clears IPV6_V6ONLY).
+/// - IPv6 addr + `v6_only=true`  → IPv6-only (keeps IPV6_V6ONLY set).
+pub fn bind_tcp_listener(addr: std::net::SocketAddr, v6_only: bool) -> Result<TcpListener> {
     use socket2::{Domain, Protocol, Socket, Type};
     let domain = if addr.is_ipv6() {
         Domain::IPV6
@@ -80,7 +80,7 @@ pub fn bind_tcp_listener(addr: std::net::SocketAddr) -> Result<TcpListener> {
     };
     let sock = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
     if addr.is_ipv6() {
-        sock.set_only_v6(false)?;
+        sock.set_only_v6(v6_only)?;
     }
     sock.set_reuse_address(true)?;
     sock.set_nonblocking(true)?;
@@ -90,7 +90,7 @@ pub fn bind_tcp_listener(addr: std::net::SocketAddr) -> Result<TcpListener> {
 }
 
 /// Same idea for UDP.
-pub fn bind_udp_socket(addr: std::net::SocketAddr) -> Result<UdpSocket> {
+pub fn bind_udp_socket(addr: std::net::SocketAddr, v6_only: bool) -> Result<UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
     let domain = if addr.is_ipv6() {
         Domain::IPV6
@@ -99,7 +99,7 @@ pub fn bind_udp_socket(addr: std::net::SocketAddr) -> Result<UdpSocket> {
     };
     let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
     if addr.is_ipv6() {
-        sock.set_only_v6(false)?;
+        sock.set_only_v6(v6_only)?;
     }
     sock.set_nonblocking(true)?;
     sock.bind(&addr.into())?;
@@ -166,6 +166,7 @@ struct TunnelSpec {
     deploy_generation: u64,
     acl: Acl,
     speed_limit_kbps: u64,
+    v6_only: bool,
 }
 
 impl From<&ForwardConfig> for TunnelSpec {
@@ -187,6 +188,7 @@ impl From<&ForwardConfig> for TunnelSpec {
             deploy_generation: t.deploy_generation,
             acl: Acl::new(&t.allow_cidrs, &t.deny_cidrs),
             speed_limit_kbps: t.speed_limit_kbps,
+            v6_only: t.v6_only,
         }
     }
 }
@@ -583,7 +585,7 @@ async fn start_tunnel(
 
     let handle = match Protocol::try_from(spec.protocol).unwrap_or(Protocol::Tcp) {
         Protocol::Tcp => {
-            let listener = bind_tcp_listener(listen)?;
+            let listener = bind_tcp_listener(listen, spec.v6_only)?;
             let max = if spec.max_connections == 0 {
                 1024
             } else {
@@ -609,7 +611,7 @@ async fn start_tunnel(
             ))
         }
         Protocol::Udp => {
-            let sock = bind_udp_socket(listen)?;
+            let sock = bind_udp_socket(listen, spec.v6_only)?;
             tokio::spawn(run_udp(
                 spec.id.clone(),
                 sock,
