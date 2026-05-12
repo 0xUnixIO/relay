@@ -328,7 +328,7 @@ install -m 0755 "$DIR/$BIN_NAME" "${BIN_LINK}.new"
 mv -f "${BIN_LINK}.new" "$BIN_LINK"
 
 # ── TimescaleDB 无感迁移（仅在 update 且使用内置 Docker Postgres 时触发）────────
-# pg16 数据目录格式与 timescale/timescaledb:latest-pg16 完全兼容，直接换镜像即可。
+# pg16/pg17 数据目录格式与 timescale/timescaledb:latest-pg17 完全兼容，直接换镜像即可。
 # relay-master 启动后会自动执行 0004_forward_stats.sql 建表及 hypertable。
 _migrate_to_timescaledb() {
   [[ -f "$COMPOSE_FILE" ]]          || return 0
