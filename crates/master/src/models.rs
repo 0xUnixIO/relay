@@ -42,6 +42,7 @@ pub struct Node {
     pub expires_at: Option<DateTime<Utc>>,
     pub monthly_price: Option<f64>,
     pub website: String,
+    pub listen_stack: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Runtime-only: heartbeat-advertised capability tokens. Not persisted

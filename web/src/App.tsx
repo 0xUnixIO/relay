@@ -16,6 +16,7 @@ import RoleHome from "@/components/RoleHome";
 import UserDashboard from "@/pages/UserDashboard";
 import ConfigPage from "@/pages/Config";
 import ProbePage from "@/pages/Probe";
+import NodeOverview from "@/pages/NodeOverview";
 import { ConfirmProvider } from "@/hooks/useConfirm";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -42,6 +43,7 @@ export default function App() {
               <Route path="/users" element={<UsersPage />} />
               <Route path="/user-groups" element={<UserGroupsPage />} />
               <Route path="/config" element={<ConfigPage />} />
+              <Route path="/overview" element={<NodeOverview />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

@@ -42,6 +42,13 @@ import {
 import { toast } from "sonner";
 import { useSetupLink } from "@/hooks/useSetupLink";
 import { ShellCmd } from "@/components/ShellCmd";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 function isOnline(n: NodeInfo): boolean {
   if (!n.last_seen_at) return false;
@@ -97,6 +104,7 @@ export default function NodeDetail() {
   const [metaExpiresAt, setMetaExpiresAt] = useState<string>("");
   const [metaPrice, setMetaPrice] = useState<string>("");
   const [metaWebsite, setMetaWebsite] = useState<string>("");
+  const [listenStack, setListenStack] = useState<string>("dual");
 
   useEffect(() => {
     if (!node) return;
@@ -161,6 +169,11 @@ export default function NodeDetail() {
     });
   }, [node?.traffic_ratio]);
 
+  useEffect(() => {
+    if (!node) return;
+    setListenStack(node.listen_stack ?? "dual");
+  }, [node?.listen_stack]);
+
   // 同步节点信息字段（expires_at / monthly_price / website）
   useEffect(() => {
     if (!node) return;
@@ -200,7 +213,8 @@ export default function NodeDetail() {
   );
 
   const hostnameDirty = !!node && hostnameInput.trim() !== node.hostname && hostnameInput.trim() !== "";
-  const settingsDirty = hostnameDirty || ipsDirty || prDirty || ratioDirty || metaDirty;
+  const listenStackDirty = !!node && listenStack !== (node.listen_stack ?? "dual");
+  const settingsDirty = hostnameDirty || ipsDirty || prDirty || ratioDirty || metaDirty || listenStackDirty;
   const settingsValid = prValid && ratioValid;
 
   const saveSettings = async () => {
@@ -220,6 +234,7 @@ export default function NodeDetail() {
         payload.monthly_price = metaPrice === "" ? null : Number(metaPrice);
         payload.website = metaWebsite;
       }
+      if (listenStackDirty) payload.listen_stack = listenStack;
       if (Object.keys(payload).length > 0) {
         const updated = await Api.updateNode(node.id, payload as any);
         mutateNode(updated, { revalidate: false });
@@ -433,6 +448,20 @@ export default function NodeDetail() {
                 value={ratioInput}
                 onChange={(e) => setRatioInput(e.target.value)}
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label>监听协议栈</Label>
+              <Select value={listenStack} onValueChange={setListenStack}>
+                <SelectTrigger className="w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="dual">双栈（默认）</SelectItem>
+                  <SelectItem value="v4">仅 IPv4</SelectItem>
+                  <SelectItem value="v6">仅 IPv6</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">控制该节点所有监听端口绑定的协议栈</p>
             </div>
           </div>
           {(!prValid || !ratioValid) && (

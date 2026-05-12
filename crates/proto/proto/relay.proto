@@ -155,6 +155,8 @@ message ForwardConfig {
   uint64 deploy_generation = 11;
   // 0 = unlimited; otherwise total bandwidth cap in KB/s for this forward.
   uint64 speed_limit_kbps = 12;
+  // When listen_addr is [::], set IPV6_V6ONLY so only v6 clients connect.
+  bool v6_only = 13;
 }
 
 enum Protocol {
