@@ -13,6 +13,7 @@
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use futures_core::Stream;
@@ -44,6 +45,8 @@ pub async fn serve(addr: SocketAddr, state: AppState, pki: Arc<Pki>) -> anyhow::
     let svc = NodeServiceImpl { state };
     Server::builder()
         .tls_config(tls)?
+        .http2_keepalive_interval(Some(Duration::from_secs(20)))
+        .http2_keepalive_timeout(Some(Duration::from_secs(10)))
         .add_service(NodeServiceServer::new(svc))
         .serve(addr)
         .await?;
@@ -550,14 +553,6 @@ async fn handle_inbound(
                                         .await
                                         .unwrap_or_default();
                                         for (nid,) in &nodes {
-                                            let _ = sqlx::query(
-                                                "UPDATE nodes
-                                                    SET tunnels_version = tunnels_version + 1
-                                                  WHERE id = $1",
-                                            )
-                                            .bind(nid)
-                                            .execute(&db)
-                                            .await;
                                             registry.push_config(&db, nid).await;
                                         }
                                     }
@@ -582,6 +577,12 @@ async fn handle_inbound(
                         .bind(config_version as i64)
                         .execute(&db)
                         .await;
+                    let _ = sqlx::query(
+                        "UPDATE forward_ports SET last_applied_at = now() WHERE node_id = $1",
+                    )
+                    .bind(&node_id)
+                    .execute(&db)
+                    .await;
                     tracing::info!(%node_id, version = config_version, "config applied");
                 } else {
                     tracing::warn!(%node_id, version = config_version, %error, "config apply failed");

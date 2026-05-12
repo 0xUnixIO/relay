@@ -110,9 +110,8 @@ async fn main() -> Result<()> {
                     "master stream closed, reconnecting in {:?}",
                     backoff
                 );
-                if matches!(reason, SessionExit::CertRotated) {
-                    backoff = Duration::from_secs(1);
-                }
+                // 正常关闭（EOF 或证书轮转）说明连接曾成功建立，快速重连
+                backoff = Duration::from_secs(1);
             }
             Err(e) => {
                 tracing::warn!(error = ?e, "master session error, reconnecting in {:?}", backoff);
@@ -503,7 +502,10 @@ async fn connect_mtls(cli: &Cli) -> Result<NodeServiceClient<tonic::transport::C
 
     let endpoint = Endpoint::from_shared(cli.master.clone())?
         .tls_config(tls)?
-        .connect_timeout(Duration::from_secs(10));
+        .connect_timeout(Duration::from_secs(10))
+        .http2_keep_alive_interval(Duration::from_secs(20))
+        .keep_alive_timeout(Duration::from_secs(10))
+        .keep_alive_while_idle(true);
     let channel = endpoint.connect().await?;
     Ok(NodeServiceClient::new(channel))
 }

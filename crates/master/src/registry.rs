@@ -229,11 +229,6 @@ pub enum ProbeError {
 pub async fn build_config_snapshot(db: &PgPool, node_id: &str) -> sqlx::Result<ConfigUpdate> {
     use relay_proto::v1::Protocol;
 
-    let version: i64 = sqlx::query_scalar("SELECT tunnels_version FROM nodes WHERE id = $1")
-        .bind(node_id)
-        .fetch_one(db)
-        .await?;
-
     // Layered DAG: 单一跳可能由多个节点组成（DNS-LB / fan-in），同层共享
     // listen_port（由 0007 的 deferrable trigger 保证）。两阶段读取：
     //
@@ -400,10 +395,40 @@ pub async fn build_config_snapshot(db: &PgPool, node_id: &str) -> sqlx::Result<C
         )
         .collect();
 
-    Ok(ConfigUpdate {
-        version: version as u64,
-        forwards,
-    })
+    // 用所有 ForwardConfig 字段的内容算指纹，替代单调自增版本号
+    let version: u64 = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        for f in &forwards {
+            h.update(f.forward_id.as_bytes());
+            h.update(f.hop_index.to_le_bytes());
+            h.update((f.protocol as u32).to_le_bytes());
+            h.update(f.listen_addr.as_bytes());
+            for addr in &f.upstream_addrs {
+                h.update(addr.as_bytes());
+            }
+            h.update(f.max_connections.to_le_bytes());
+            for cidr in &f.allow_cidrs {
+                h.update(cidr.as_bytes());
+            }
+            for cidr in &f.deny_cidrs {
+                h.update(cidr.as_bytes());
+            }
+            h.update([f.enabled as u8]);
+            h.update(f.lb_strategy.as_bytes());
+            h.update(f.deploy_generation.to_le_bytes());
+            h.update(f.speed_limit_kbps.to_le_bytes());
+        }
+        u64::from_le_bytes(h.finalize()[..8].try_into().unwrap())
+    };
+
+    let _ = sqlx::query("UPDATE nodes SET tunnels_version = $2 WHERE id = $1")
+        .bind(node_id)
+        .bind(version as i64)
+        .execute(db)
+        .await;
+
+    Ok(ConfigUpdate { version, forwards })
 }
 
 /// Convert a node address (host or IP, no port) into a CIDR usable in

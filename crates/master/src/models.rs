@@ -180,6 +180,8 @@ pub struct ForwardView {
     /// 当前活跃客户端 IP 列表（内存快照，随 ForwardStats 更新，最多滞后 30s）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_client_ips: Vec<String>,
+    /// 所有跳节点均已回执当前配置版本，实时计算。
+    pub synced: bool,
 }
 
 // ---------- User Groups ----------

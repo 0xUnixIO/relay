@@ -1031,13 +1031,6 @@ async fn update_node(
         match crate::ports::predecessors_of(&s.db, &id).await {
             Ok(preds) => {
                 for pred in &preds {
-                    let _ = sqlx::query(
-                        "UPDATE nodes SET tunnels_version = tunnels_version + 1
-                          WHERE id = $1",
-                    )
-                    .bind(pred)
-                    .execute(&s.db)
-                    .await;
                     s.registry.push_config(&s.db, pred).await;
                 }
             }
@@ -1835,11 +1828,6 @@ async fn update_tunnel(
     if req.enabled.is_some() {
         let nodes = nodes_for_tunnel(&s.db, id).await?;
         for n in &nodes {
-            let _ =
-                sqlx::query("UPDATE nodes SET tunnels_version = tunnels_version + 1 WHERE id = $1")
-                    .bind(n)
-                    .execute(&s.db)
-                    .await;
             s.registry.push_config(&s.db, n).await;
         }
         crate::scheduler::kick(s.db.clone(), s.registry.clone());
@@ -2818,12 +2806,6 @@ async fn delete_user_tunnel(
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    for (nid,) in &nodes {
-        sqlx::query("UPDATE nodes SET tunnels_version = tunnels_version + 1 WHERE id = $1")
-            .bind(nid)
-            .execute(&mut *tx)
-            .await?;
-    }
     tx.commit().await?;
     if res.rows_affected() == 0 {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "用户隧道不存在"));
@@ -3006,6 +2988,22 @@ async fn build_forward_view(
 
     let active_client_ips = active_conns.get(&r.f.id.to_string()).await;
 
+    // 所有跳节点都已回执当前 tunnels_version 则视为已同步
+    let synced: bool = sqlx::query_scalar(
+        "SELECT NOT EXISTS (
+             SELECT 1 FROM forward_ports fp
+             JOIN nodes n ON n.id = fp.node_id
+             WHERE fp.forward_id = $1
+               AND n.tunnels_version != n.last_applied_version
+         ) AND EXISTS (
+             SELECT 1 FROM forward_ports WHERE forward_id = $1
+         )",
+    )
+    .bind(r.f.id)
+    .fetch_one(db)
+    .await
+    .unwrap_or(false);
+
     Ok(ForwardView {
         forward: r.f,
         user_id: r.user_id,
@@ -3021,6 +3019,7 @@ async fn build_forward_view(
         entry_addrs,
         best_exit_addr,
         active_client_ips,
+        synced,
     })
 }
 
@@ -3210,19 +3209,6 @@ async fn create_forward(
             .fetch_one(&mut *tx)
             .await?;
 
-    // Bump tunnels_version on every node along the chain.
-    let nodes: Vec<(String,)> = sqlx::query_as(
-        "SELECT DISTINCT node_id FROM forward_ports WHERE forward_id = $1 ORDER BY node_id",
-    )
-    .bind(forward.id)
-    .fetch_all(&mut *tx)
-    .await?;
-    for (nid,) in &nodes {
-        sqlx::query("UPDATE nodes SET tunnels_version = tunnels_version + 1 WHERE id = $1")
-            .bind(nid)
-            .execute(&mut *tx)
-            .await?;
-    }
     tx.commit().await?;
 
     // 若该 user_tunnel 已超流量配额，新建转发立即继承暂停状态
@@ -3420,27 +3406,19 @@ async fn update_forward(
             .execute(&mut *tx)
             .await?;
 
+        tx.commit().await?;
+
+        // 旧节点推送（会发现该 forward 消失），新节点推送（获得新 forward）。
         for (nid,) in &old_nodes {
-            sqlx::query("UPDATE nodes SET tunnels_version = tunnels_version + 1 WHERE id = $1")
-                .bind(nid)
-                .execute(&mut *tx)
-                .await?;
+            s.registry.push_config(&s.db, nid).await;
         }
         let new_nodes: Vec<(String,)> =
             sqlx::query_as("SELECT DISTINCT node_id FROM forward_ports WHERE forward_id = $1")
                 .bind(id)
-                .fetch_all(&mut *tx)
-                .await?;
+                .fetch_all(&s.db)
+                .await
+                .unwrap_or_default();
         for (nid,) in &new_nodes {
-            sqlx::query("UPDATE nodes SET tunnels_version = tunnels_version + 1 WHERE id = $1")
-                .bind(nid)
-                .execute(&mut *tx)
-                .await?;
-        }
-        tx.commit().await?;
-
-        // 旧节点此 forward 已不存在，推送最新配置（会发现该 forward 消失）。
-        for (nid,) in &old_nodes {
             s.registry.push_config(&s.db, nid).await;
         }
     } else if let Some(new_port) = req.in_port {
@@ -3509,12 +3487,6 @@ async fn delete_forward(
         .await?;
     if res.rows_affected() == 0 {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "资源不存在"));
-    }
-    for (nid,) in &nodes {
-        sqlx::query("UPDATE nodes SET tunnels_version = tunnels_version + 1 WHERE id = $1")
-            .bind(nid)
-            .execute(&mut *tx)
-            .await?;
     }
     tx.commit().await?;
     for (nid,) in &nodes {
@@ -3594,12 +3566,6 @@ async fn batch_delete_forwards(
         .bind(&req.ids)
         .execute(&mut *tx)
         .await?;
-    for (nid,) in &nodes {
-        sqlx::query("UPDATE nodes SET tunnels_version = tunnels_version + 1 WHERE id = $1")
-            .bind(nid)
-            .execute(&mut *tx)
-            .await?;
-    }
     tx.commit().await?;
     for (nid,) in &nodes {
         s.registry.push_config(&s.db, nid).await;
@@ -3683,10 +3649,6 @@ async fn bump_and_push_forwards(s: &AppState, forward_ids: &[i64]) {
         }
     };
     for (nid,) in &nodes {
-        let _ = sqlx::query("UPDATE nodes SET tunnels_version = tunnels_version + 1 WHERE id = $1")
-            .bind(nid)
-            .execute(&s.db)
-            .await;
         s.registry.push_config(&s.db, nid).await;
     }
 }
