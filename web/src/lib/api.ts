@@ -234,6 +234,8 @@ export interface Forward {
   best_exit_addr?: string | null;
   /** 当前活跃客户端 IP 列表（随 ForwardStats 快照更新） */
   active_client_ips?: string[];
+  /** 所有跳节点均已回执当前配置版本 */
+  synced?: boolean;
 }
 
 export interface CreateForwardReq {

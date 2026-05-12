@@ -380,7 +380,12 @@ export default function ForwardsPage() {
                           <TooltipTrigger asChild>
                             <div>
                               <div className="font-medium truncate">{f.name}</div>
-                              <div className="text-xs text-muted-foreground truncate">{f.tunnel_name}</div>
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="text-xs text-muted-foreground truncate">{f.tunnel_name}</span>
+                                {f.synced === false && (
+                                  <Badge variant="outline" className="shrink-0 text-xs py-0 px-1 text-amber-500 border-amber-400">同步中</Badge>
+                                )}
+                              </div>
                             </div>
                           </TooltipTrigger>
                           <TooltipContent>{f.name} · {f.tunnel_name}</TooltipContent>
