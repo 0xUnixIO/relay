@@ -440,27 +440,6 @@ pub async fn build_config_snapshot(db: &PgPool, node_id: &str) -> sqlx::Result<C
 /// fail closed by returning an unreachable sentinel: an empty allow list on
 /// the node side would mean "accept from anywhere", silently exposing the
 /// intermediate listen port to the public internet — a serious bypass.
-/// Returning a non-empty list with a sentinel keeps the listener active but
-/// effectively rejects all sources, surfacing the misconfiguration as
-/// connection failures rather than a security hole. Operators should put
-/// IP literals in `server_ips`; UI/API validation also encourages this.
-fn cidr_for_host(addr: &str) -> String {
-    use std::net::IpAddr;
-    match addr.parse::<IpAddr>() {
-        Ok(IpAddr::V4(_)) => format!("{addr}/32"),
-        Ok(IpAddr::V6(_)) => format!("{addr}/128"),
-        Err(_) => {
-            tracing::warn!(
-                server_ip = %addr,
-                "non-IP server_ip cannot be expressed as a CIDR; \
-                 transit hop ACL will fail closed. Use an IP literal in \
-                 server_ips to enable multi-hop traffic."
-            );
-            "0.0.0.0/32".to_string()
-        }
-    }
-}
-
 pub fn config_to_master_msg(cfg: ConfigUpdate) -> MasterMessage {
     MasterMessage {
         payload: Some(MasterPayload::Config(cfg)),
