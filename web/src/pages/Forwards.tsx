@@ -406,12 +406,15 @@ export default function ForwardsPage() {
           )}
         </div>
         {forwardTunnels.length > 1 && (
-          <Select value={filterTunnelId} onValueChange={setFilterTunnelId}>
+          <Select
+            value={filterTunnelId || "__all__"}
+            onValueChange={(v) => setFilterTunnelId(v === "__all__" ? "" : v)}
+          >
             <SelectTrigger className="w-[180px]">
               <SelectValue placeholder="所有隧道" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">所有隧道</SelectItem>
+              <SelectItem value="__all__">所有隧道</SelectItem>
               {forwardTunnels.map((t) => (
                 <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
               ))}
