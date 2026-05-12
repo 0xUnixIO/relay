@@ -357,12 +357,6 @@ pub async fn build_config_snapshot(db: &PgPool, node_id: &str) -> sqlx::Result<C
                     vec!["0.0.0.0:0".to_string()]
                 };
 
-                // ACL: entry hop honours user-configured lists; transit/egress
-                // hops are left open (empty allow = accept all). Intermediate
-                // ports are randomly assigned and not publicly advertised, so
-                // port obscurity is the effective barrier. Restricting by
-                // server_ips breaks asymmetric-routing nodes (IX, multi-homed)
-                // where outbound IP differs from the registered server_ip.
                 let (allow_cidrs, deny_cidrs) = if hop_index == 0 {
                     (user_allow, user_deny)
                 } else {
