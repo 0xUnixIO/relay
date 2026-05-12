@@ -323,7 +323,7 @@ fi
 log "installing $DATA_DIR/$BIN_NAME"
 mkdir -p "$DATA_DIR"
 chown relay:relay "$DATA_DIR"
-chmod 0700 "$DATA_DIR"
+chmod 0711 "$DATA_DIR"
 install -m 0755 "$DIR/$BIN_NAME" "$DATA_DIR/$BIN_NAME.new"
 chown relay:relay "$DATA_DIR/$BIN_NAME.new"
 mv -f "$DATA_DIR/$BIN_NAME.new" "$DATA_DIR/$BIN_NAME"
