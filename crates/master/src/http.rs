@@ -4052,8 +4052,8 @@ async fn global_traffic_stats_handler(
              to_timestamp(floor(extract(epoch from ts) / $1) * $1) AS ts,
              SUM(bytes_in)::BIGINT                                  AS bytes_in,
              SUM(bytes_out)::BIGINT                                 AS bytes_out,
-             MAX(peak_conns)::INT                                   AS peak_conns
-         FROM forward_stats
+             0::INT                                                 AS peak_conns
+         FROM node_stats
          WHERE ts >= now() - $2::interval
          GROUP BY 1
          ORDER BY 1",
