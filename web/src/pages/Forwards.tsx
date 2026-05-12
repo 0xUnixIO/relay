@@ -3,7 +3,7 @@ import { useForwardStats } from "@/hooks/useForwardStats";
 import { useConfirm } from "@/hooks/useConfirm";
 import useSWR from "swr";
 import {
-  Plus, Pencil, Trash2, Pause, Play, RefreshCw, Activity, Shuffle, Check, Network, MoreHorizontal, BarChart2, LineChart, Globe,
+  Plus, Pencil, Trash2, Pause, Play, RefreshCw, Activity, Shuffle, Check, Network, MoreHorizontal, BarChart2, LineChart, Globe, Search, X,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -25,8 +25,9 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  Api, type Forward, type Tunnel, type NodeInfo, type ForwardStatBucket, type ConnectionLog,
+  Api, type Forward, type Tunnel, type NodeInfo, type ForwardStatBucket, type ConnectionLog, type MeResp,
 } from "@/lib/api";
+import { Switch } from "@/components/ui/switch";
 import { fmtBytes } from "@/lib/utils";
 import { getRole, getToken } from "@/lib/auth";
 import { toast } from "sonner";
@@ -71,7 +72,54 @@ type ProbeState =
 export default function ForwardsPage() {
   const confirm = useConfirm();
   const isAdmin = getRole() === "admin";
-  const { data: forwards = [], mutate } = useSWR("forwards", Api.listForwards);
+
+  // 搜索与筛选
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterTunnelId, setFilterTunnelId] = useState("");
+  const [showAllUsers, setShowAllUsers] = useState(false); // admin 专用
+
+  // admin 需要自己的 user_id 来实现"只看自己"
+  const { data: me } = useSWR<MeResp>(isAdmin ? "me" : null, isAdmin ? Api.getMe : null);
+
+  // admin 模式：默认只取自己，showAllUsers=true 时取全部
+  const forwardsKey = isAdmin
+    ? (showAllUsers ? "forwards/all" : me?.id ? `forwards/own/${me.id}` : null)
+    : "forwards";
+  const { data: rawForwards = [], mutate } = useSWR(
+    forwardsKey,
+    () => Api.listForwards(isAdmin && !showAllUsers && me?.id ? { user_id: me.id } : {}),
+  );
+
+  // 客户端筛选
+  const forwards = useMemo(() => {
+    let f = rawForwards;
+    if (filterTunnelId) f = f.filter((fw) => fw.tunnel_id === filterTunnelId);
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      f = f.filter(
+        (fw) =>
+          fw.name.toLowerCase().includes(q) ||
+          fw.tunnel_name?.toLowerCase().includes(q) ||
+          (showAllUsers && fw.username?.toLowerCase().includes(q)),
+      );
+    }
+    return f;
+  }, [rawForwards, filterTunnelId, searchQuery, showAllUsers]);
+
+  // 从已拉取的数据中提取隧道列表（用于筛选下拉）
+  const forwardTunnels = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const f of rawForwards) {
+      if (!seen.has(f.tunnel_id)) seen.set(f.tunnel_id, f.tunnel_name);
+    }
+    return [...seen.entries()].map(([id, name]) => ({ id, name }));
+  }, [rawForwards]);
+
+  const handleShowAllChange = (val: boolean) => {
+    setShowAllUsers(val);
+    setFilterTunnelId("");
+  };
+
   // 所有用户都能获取隧道列表（非 admin 只返回 enabled 的）
   const { data: tunnels = [] } = useSWR<Tunnel[]>("tunnels", Api.listTunnels);
   const { data: nodes = [] } = useSWR<NodeInfo[]>(
@@ -133,7 +181,7 @@ export default function ForwardsPage() {
   // 已被占用的入口端口（排除当前正在编辑的 forward）
   const usedPorts = useMemo(() => {
     const set = new Set<number>();
-    for (const f of forwards) {
+    for (const f of rawForwards) {
       if (editing && f.id === editing.id) continue;
       const entry = f.ports?.find((p) => p.hop_index === 0);
       if (entry?.listen_port) set.add(entry.listen_port);
@@ -338,6 +386,50 @@ export default function ForwardsPage() {
         </Card>
       )}
 
+      {/* 筛选栏 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[180px]">
+          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
+          <Input
+            placeholder={showAllUsers ? "搜索名称、隧道或用户…" : "搜索名称或隧道…"}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-8 pr-8"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery("")}
+              className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+        {forwardTunnels.length > 1 && (
+          <Select value={filterTunnelId} onValueChange={setFilterTunnelId}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="所有隧道" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">所有隧道</SelectItem>
+              {forwardTunnels.map((t) => (
+                <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        {isAdmin && (
+          <div className="flex items-center gap-2 ml-auto shrink-0">
+            <Switch
+              id="show-all-users"
+              checked={showAllUsers}
+              onCheckedChange={handleShowAllChange}
+            />
+            <Label htmlFor="show-all-users" className="cursor-pointer whitespace-nowrap">所有用户</Label>
+          </div>
+        )}
+      </div>
+
       {/* overflow-x-auto 防止窄屏下表格撑破页面布局 */}
       <Card>
         <CardContent className="p-0 overflow-x-auto">
@@ -359,10 +451,14 @@ export default function ForwardsPage() {
                 <TableRow className="hover:bg-transparent even:bg-transparent">
                   {/* 移动端 3 列（名称、入口、操作），sm 以上 7 列 */}
                   <TableCell colSpan={3} className="text-center sm:hidden">
-                    <EmptyState icon={Network} title="暂无转发" description="点击右上角「新建转发」按钮创建。" compact />
+                    {searchQuery || filterTunnelId
+                      ? <EmptyState icon={Search} title="无匹配结果" description="尝试调整搜索词或筛选条件。" compact />
+                      : <EmptyState icon={Network} title="暂无转发" description="点击右上角「新建转发」按钮创建。" compact />}
                   </TableCell>
                   <TableCell colSpan={7} className="text-center hidden sm:table-cell">
-                    <EmptyState icon={Network} title="暂无转发" description="点击右上角「新建转发」按钮创建。" compact />
+                    {searchQuery || filterTunnelId
+                      ? <EmptyState icon={Search} title="无匹配结果" description="尝试调整搜索词或筛选条件。" compact />
+                      : <EmptyState icon={Network} title="暂无转发" description="点击右上角「新建转发」按钮创建。" compact />}
                   </TableCell>
                 </TableRow>
               ) : (

@@ -397,7 +397,13 @@ export const Api = {
     api<TunnelProbeResult>(`/api/v1/tunnels/${id}/probe`, { method: "POST" }),
 
   // forwards
-  listForwards: () => api<Forward[]>("/api/v1/forwards"),
+  listForwards: (params?: { user_id?: string; tunnel_id?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.user_id) qs.set("user_id", params.user_id);
+    if (params?.tunnel_id) qs.set("tunnel_id", params.tunnel_id);
+    const q = qs.toString();
+    return api<Forward[]>(`/api/v1/forwards${q ? `?${q}` : ""}`);
+  },
   getForward: (id: string) => api<Forward>(`/api/v1/forwards/${id}`),
   createForward: (r: CreateForwardReq) =>
     api<Forward>("/api/v1/forwards", {
