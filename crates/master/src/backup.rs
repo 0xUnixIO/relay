@@ -543,6 +543,80 @@ fn xml_text<'a>(block: &'a str, tag: &str) -> Option<&'a str> {
     Some(&block[start..start + end])
 }
 
+/// 查询 FK 依赖并做拓扑排序，返回"父表在前、子表在后"的插入顺序。
+/// 不在 `tables` 列表中的依赖会被忽略（如已排除的历史表）。
+async fn topo_sort_by_fk(db: &PgPool, tables: &[&str]) -> anyhow::Result<Vec<String>> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    // child -> [parents]（仅限本次恢复的表）
+    let table_set: HashSet<&str> = tables.iter().copied().collect();
+
+    let deps: Vec<(String, String)> = sqlx::query_as(
+        "SELECT DISTINCT
+                kcu.table_name  AS child,
+                ccu.table_name  AS parent
+           FROM information_schema.table_constraints    tc
+           JOIN information_schema.key_column_usage     kcu
+             ON tc.constraint_name   = kcu.constraint_name
+            AND tc.table_schema      = kcu.table_schema
+           JOIN information_schema.referential_constraints rc
+             ON tc.constraint_name   = rc.constraint_name
+            AND tc.table_schema      = rc.constraint_schema
+           JOIN information_schema.constraint_column_usage ccu
+             ON rc.unique_constraint_name   = ccu.constraint_name
+            AND rc.unique_constraint_schema = ccu.table_schema
+          WHERE tc.constraint_type = 'FOREIGN KEY'
+            AND tc.table_schema    = 'public'",
+    )
+    .fetch_all(db)
+    .await?;
+
+    // in-degree 和邻接表（只含目标表之间的边）
+    let mut in_degree: HashMap<&str, usize> = tables.iter().map(|&t| (t, 0)).collect();
+    let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
+
+    for (child, parent) in &deps {
+        let c = child.as_str();
+        let p = parent.as_str();
+        if table_set.contains(c) && table_set.contains(p) && c != p {
+            *in_degree.entry(c).or_insert(0) += 1;
+            children.entry(p).or_default().push(c);
+        }
+    }
+
+    // Kahn 算法
+    let mut queue: VecDeque<&str> = in_degree
+        .iter()
+        .filter(|(_, &d)| d == 0)
+        .map(|(&t, _)| t)
+        .collect();
+    let mut sorted = Vec::with_capacity(tables.len());
+
+    while let Some(t) = queue.pop_front() {
+        sorted.push(t.to_string());
+        if let Some(kids) = children.get(t) {
+            for &k in kids {
+                let deg = in_degree.entry(k).or_insert(0);
+                *deg -= 1;
+                if *deg == 0 {
+                    queue.push_back(k);
+                }
+            }
+        }
+    }
+
+    // 若存在循环依赖，将剩余表追加到末尾（不应出现，但作保底）
+    if sorted.len() < tables.len() {
+        for &t in tables {
+            if !sorted.contains(&t.to_string()) {
+                sorted.push(t.to_string());
+            }
+        }
+    }
+
+    Ok(sorted)
+}
+
 pub async fn restore_from_r2(
     db: &PgPool,
     cfg: &R2BackupConfig,
@@ -565,30 +639,30 @@ pub async fn restore_from_r2(
         .as_object()
         .ok_or_else(|| anyhow::anyhow!("备份格式错误：缺少 tables 字段"))?;
 
-    let mut tx = db.begin().await?;
-
-    // 禁用 FK 触发器（需要 REPLICATION 权限或 superuser）
-    sqlx::query("SET LOCAL session_replication_role = 'replica'")
-        .execute(&mut *tx)
-        .await?;
-
-    // 一次性 TRUNCATE 所有有数据的表，CASCADE 处理交叉引用
-    let table_list: Vec<String> = tables
+    let non_empty_tables: Vec<&str> = tables
         .keys()
         .filter(|t| !tables[*t].as_array().map(|a| a.is_empty()).unwrap_or(true))
-        .map(|t| pg_quote_ident(t))
+        .map(|s| s.as_str())
         .collect();
 
+    // 按 FK 依赖拓扑排序，保证父表先于子表插入，无需 superuser 权限
+    let ordered = topo_sort_by_fk(db, &non_empty_tables).await?;
+
+    let mut tx = db.begin().await?;
+
+    // TRUNCATE CASCADE 一次性清空（不需要特殊权限）
+    let table_list: Vec<String> = non_empty_tables.iter().map(|t| pg_quote_ident(t)).collect();
     if !table_list.is_empty() {
         let sql = format!("TRUNCATE TABLE {} CASCADE", table_list.join(", "));
         sqlx::query(&sql).execute(&mut *tx).await?;
     }
 
-    // 逐表写回
-    for (table_name, rows) in tables {
-        if rows.as_array().map(|a| a.is_empty()).unwrap_or(true) {
-            continue;
-        }
+    // 按拓扑顺序写回，满足 FK 约束
+    for table_name in &ordered {
+        let rows = match tables.get(table_name) {
+            Some(r) if !r.as_array().map(|a| a.is_empty()).unwrap_or(true) => r,
+            _ => continue,
+        };
         let safe = pg_quote_ident(table_name);
         let rows_json = serde_json::to_string(rows)?;
         sqlx::query(&format!(
