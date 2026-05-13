@@ -3,7 +3,7 @@ import useSWR from "swr";
 import { toast } from "sonner";
 import { Copy, Check, Play, RefreshCw, FolderSearch, Rocket } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import { Api, ApiError, type BackupJob } from "@/lib/api";
+import { Api, ApiError, type R2BackupFile } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -55,7 +55,7 @@ export default function ConfigPage() {
   const [r2Saving, setR2Saving] = useState(false);
   const [triggering, setTriggering] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
-  const [backupFiles, setBackupFiles] = useState<BackupJob[] | null>(null);
+  const [backupFiles, setBackupFiles] = useState<R2BackupFile[] | null>(null);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [confirmKey, setConfirmKey] = useState<string | null>(null);
   const [restoringKey, setRestoringKey] = useState<string | null>(null);
@@ -669,25 +669,25 @@ export default function ConfigPage() {
                     </thead>
                     <tbody>
                       {backupFiles.map((file) => (
-                        <tr key={file.id} className="border-b last:border-0 hover:bg-muted/20">
+                        <tr key={file.key} className="border-b last:border-0 hover:bg-muted/20">
                           <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
-                            {new Date(file.started_at).toLocaleString("zh-CN", { hour12: false })}
+                            {new Date(file.last_modified).toLocaleString("zh-CN", { hour12: false })}
                           </td>
-                          <td className="px-3 py-2 tabular-nums">{fmtSize(file.size_bytes)}</td>
-                          <td className="px-3 py-2 font-mono text-muted-foreground max-w-[200px] truncate" title={file.object_key ?? ""}>
-                            {file.object_key ?? "—"}
+                          <td className="px-3 py-2 tabular-nums">{fmtSize(file.size)}</td>
+                          <td className="px-3 py-2 font-mono text-muted-foreground max-w-[200px] truncate" title={file.key}>
+                            {file.key}
                           </td>
                           <td className="px-3 py-2">
-                            {confirmKey === file.object_key ? (
+                            {confirmKey === file.key ? (
                               <div className="flex gap-1">
                                 <Button
                                   size="sm"
                                   variant="destructive"
                                   className="h-6 text-xs px-2"
-                                  disabled={restoringKey === file.object_key}
-                                  onClick={() => doRestore(file.object_key!)}
+                                  disabled={restoringKey === file.key}
+                                  onClick={() => doRestore(file.key)}
                                 >
-                                  {restoringKey === file.object_key ? <RefreshCw className="h-3 w-3 animate-spin" /> : "确认恢复"}
+                                  {restoringKey === file.key ? <RefreshCw className="h-3 w-3 animate-spin" /> : "确认恢复"}
                                 </Button>
                                 <Button
                                   size="sm"
@@ -705,7 +705,7 @@ export default function ConfigPage() {
                                 variant="outline"
                                 className="h-6 text-xs px-2"
                                 disabled={!!restoringKey}
-                                onClick={() => setConfirmKey(file.object_key!)}
+                                onClick={() => setConfirmKey(file.key)}
                               >
                                 恢复
                               </Button>

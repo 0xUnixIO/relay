@@ -428,6 +428,121 @@ async fn download_from_r2(cfg: &R2BackupConfig, object_key: &str) -> anyhow::Res
     Ok(resp.bytes().await?.to_vec())
 }
 
+/// R2 中实际存在的备份对象
+#[derive(serde::Serialize)]
+pub struct R2BackupFile {
+    pub key: String,
+    pub size: i64,
+    pub last_modified: chrono::DateTime<Utc>,
+}
+
+pub async fn list_objects_from_r2(cfg: &R2BackupConfig) -> anyhow::Result<Vec<R2BackupFile>> {
+    let now = Utc::now();
+    let date_str = now.format("%Y%m%d").to_string();
+    let datetime_str = now.format("%Y%m%dT%H%M%SZ").to_string();
+
+    let region = "auto";
+    let host = format!("{}.r2.cloudflarestorage.com", cfg.account_id);
+    let payload_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    let encoded_bucket = uri_encode(&cfg.bucket_name);
+    let canonical_uri = format!("/{encoded_bucket}");
+
+    // 构造查询参数（必须按字母顺序排列）
+    let prefix = if cfg.path_prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", cfg.path_prefix.trim_end_matches('/'))
+    };
+    let canonical_qs = if prefix.is_empty() {
+        "list-type=2&max-keys=1000".to_string()
+    } else {
+        format!("list-type=2&max-keys=1000&prefix={}", uri_encode(&prefix))
+    };
+    let url = format!("https://{host}{canonical_uri}?{canonical_qs}");
+
+    let canonical_headers =
+        format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{datetime_str}\n");
+    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+    let canonical_request =
+        format!("GET\n{canonical_uri}\n{canonical_qs}\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
+
+    let credential_scope = format!("{date_str}/{region}/s3/aws4_request");
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{datetime_str}\n{credential_scope}\n{}",
+        hex::encode(Sha256::digest(canonical_request.as_bytes()))
+    );
+
+    let k_date = hmac_sha256(
+        format!("AWS4{}", cfg.secret_access_key).as_bytes(),
+        date_str.as_bytes(),
+    );
+    let k_region = hmac_sha256(&k_date, region.as_bytes());
+    let k_service = hmac_sha256(&k_region, b"s3");
+    let k_signing = hmac_sha256(&k_service, b"aws4_request");
+    let signature = hex::encode(hmac_sha256(&k_signing, string_to_sign.as_bytes()));
+
+    let auth = format!(
+        "AWS4-HMAC-SHA256 Credential={}/{},SignedHeaders={},Signature={}",
+        cfg.access_key_id, credential_scope, signed_headers, signature
+    );
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(&url)
+        .header("x-amz-date", &datetime_str)
+        .header("x-amz-content-sha256", payload_hash)
+        .header("authorization", auth)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow::anyhow!("R2 ListObjects 失败 ({status}): {body}"));
+    }
+
+    let xml = resp.text().await?;
+    Ok(parse_list_objects_xml(&xml))
+}
+
+fn parse_list_objects_xml(xml: &str) -> Vec<R2BackupFile> {
+    let mut objects = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<Contents>") {
+        rest = &rest[start + "<Contents>".len()..];
+        let end = rest.find("</Contents>").unwrap_or(rest.len());
+        let block = &rest[..end];
+
+        let key = xml_text(block, "Key").unwrap_or("").to_string();
+        let size = xml_text(block, "Size")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let last_modified = xml_text(block, "LastModified")
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(Utc::now);
+
+        if !key.is_empty() {
+            objects.push(R2BackupFile {
+                key,
+                size,
+                last_modified,
+            });
+        }
+        rest = &rest[end..];
+    }
+    objects
+}
+
+fn xml_text<'a>(block: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = block.find(&open)? + open.len();
+    let end = block[start..].find(close.as_str())?;
+    Some(&block[start..start + end])
+}
+
 pub async fn restore_from_r2(
     db: &PgPool,
     cfg: &R2BackupConfig,

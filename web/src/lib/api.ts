@@ -497,7 +497,7 @@ export const Api = {
   listBackupJobs: (limit = 20) =>
     api<BackupJob[]>(`/api/v1/system/backup/jobs?limit=${limit}`),
   listBackupFiles: () =>
-    api<BackupJob[]>("/api/v1/system/backup/files"),
+    api<R2BackupFile[]>("/api/v1/system/backup/files"),
   restoreBackup: (objectKey: string) =>
     api<void>("/api/v1/system/backup/restore", {
       method: "POST",
@@ -660,6 +660,12 @@ export interface BackupJob {
   error: string | null;
   started_at: string;
   completed_at: string | null;
+}
+
+export interface R2BackupFile {
+  key: string;
+  size: number;
+  last_modified: string;
 }
 
 export type UpgradeJobState =

@@ -5227,7 +5227,7 @@ async fn put_branding(
 
 // ---------- R2 Backup Config ----------
 
-use crate::backup::{read_r2_config, BackupJob, R2BackupConfig, R2_CONFIG_KEY};
+use crate::backup::{read_r2_config, BackupJob, R2BackupConfig, R2BackupFile, R2_CONFIG_KEY};
 
 #[derive(Serialize)]
 struct R2BackupConfigResp {
@@ -5384,17 +5384,15 @@ async fn list_backup_jobs(
     Ok(Json(jobs))
 }
 
-async fn list_backup_files(State(s): State<AppState>) -> ApiResult<Json<Vec<BackupJob>>> {
-    let jobs: Vec<BackupJob> = sqlx::query_as(
-        "SELECT id, state, triggered_by, object_key, size_bytes, error, started_at, completed_at
-           FROM backup_jobs
-          WHERE state = 'succeeded' AND object_key IS NOT NULL
-          ORDER BY started_at DESC
-          LIMIT 200",
-    )
-    .fetch_all(&s.db)
-    .await?;
-    Ok(Json(jobs))
+async fn list_backup_files(State(s): State<AppState>) -> ApiResult<Json<Vec<R2BackupFile>>> {
+    let cfg = match read_r2_config(&s.db).await? {
+        Some(c) if !c.account_id.is_empty() => c,
+        _ => return Ok(Json(vec![])),
+    };
+    let files = crate::backup::list_objects_from_r2(&cfg)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(files))
 }
 
 #[derive(Deserialize)]
