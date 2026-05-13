@@ -2163,7 +2163,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "relay-common"
-version = "0.2.18"
+version = "0.2.19"
 dependencies = [
  "chrono",
  "serde",
@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "relay-master"
-version = "0.2.18"
+version = "0.2.19"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2218,7 +2218,7 @@ dependencies = [
 
 [[package]]
 name = "relay-node"
-version = "0.2.18"
+version = "0.2.19"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2257,7 +2257,7 @@ dependencies = [
 
 [[package]]
 name = "relay-proto"
-version = "0.2.18"
+version = "0.2.19"
 dependencies = [
  "prost",
  "prost-types",
