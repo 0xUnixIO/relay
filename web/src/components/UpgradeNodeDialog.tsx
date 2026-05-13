@@ -74,23 +74,21 @@ export function UpgradeNodeDialog({
     }
   }, [open]);
 
-  const channel = sysVersion?.channel ?? "stable";
-  const channelTarget =
-    channel === "rc"
-      ? sysVersion?.latest_rc?.tag ?? null
-      : sysVersion?.latest_stable?.tag ?? null;
+  const channelTarget = sysVersion?.master_version
+    ? `v${sysVersion.master_version.replace(/^v/, "")}`
+    : null;
 
   const target =
     mode === "channel"
-      ? channel
+      ? "stable"
       : tagInput.trim();
 
-  const tagInputValid = /^v\d+\.\d+\.\d+(-rc\.[0-9A-Za-z.]+)?$/.test(tagInput.trim());
+  const tagInputValid = /^v\d+\.\d+\.\d+$/.test(tagInput.trim());
   const canSubmit =
     supportsUpgrade &&
     !submitting &&
     activeJobId === null &&
-    (mode === "channel" ? !!channelTarget : tagInputValid);
+    (mode === "channel" ? true : tagInputValid);
 
   const submit = async () => {
     setSubmitting(true);
@@ -161,13 +159,9 @@ export function UpgradeNodeDialog({
                   }`}
                   disabled={!!activeJobId}
                 >
-                  <div className="font-medium">跟随通道</div>
+                  <div className="font-medium">最新稳定版</div>
                   <div className="text-xs">
-                    {vLoading
-                      ? "加载中…"
-                      : channelTarget
-                        ? `${channel} → ${channelTarget}`
-                        : `${channel}（暂无可用版本）`}
+                    {vLoading ? "加载中…" : channelTarget ?? "stable"}
                   </div>
                 </button>
                 <button
@@ -181,7 +175,7 @@ export function UpgradeNodeDialog({
                   disabled={!!activeJobId}
                 >
                   <div className="font-medium">指定 tag</div>
-                  <div className="text-xs">vX.Y.Z 或 vX.Y.Z-rc.*</div>
+                  <div className="text-xs">vX.Y.Z</div>
                 </button>
               </div>
             </div>

@@ -2,7 +2,7 @@
 //!
 //! Inputs from HTTP layer come as `target = "stable" | "rc" | "vX.Y.Z(-rc.*)?"`.
 //! This module resolves them to a concrete release with download URLs, with a
-//! 5-minute in-memory cache to avoid GitHub's 60/h unauthenticated rate limit.
+//! 1-hour in-memory cache to avoid GitHub's 60/h unauthenticated rate limit.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-const CACHE_TTL: Duration = Duration::from_secs(300);
+const CACHE_TTL: Duration = Duration::from_secs(3600);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_REPO: &str = "0xUnixIO/relay";
 
@@ -135,7 +135,6 @@ impl From<GhRelease> for ResolvedRelease {
 #[derive(Default)]
 struct CacheInner {
     stable: Option<(Instant, ResolvedRelease)>,
-    rc: Option<(Instant, ResolvedRelease)>,
     by_tag: HashMap<String, (Instant, ResolvedRelease)>,
 }
 
@@ -160,35 +159,19 @@ impl UpgradeResolver {
         }
     }
 
-    /// Resolve a target spec to a concrete release. Accepts `"stable"`, `"rc"`,
-    /// or an explicit `vX.Y.Z[-rc.*]` tag.
+    /// Resolve a target spec to a concrete release. Accepts `"stable"` or an explicit `vX.Y.Z` tag.
     pub async fn resolve(&self, target: &str) -> anyhow::Result<ResolvedRelease> {
         match target {
-            "stable" => self.latest_for_channel(false).await,
-            "rc" => self.latest_for_channel(true).await,
+            "stable" => self.latest_stable().await,
             t if validate_tag(t) => self.lookup_tag(t).await,
             t => anyhow::bail!("invalid upgrade target: {t}"),
         }
     }
 
     pub async fn latest_stable(&self) -> anyhow::Result<ResolvedRelease> {
-        self.latest_for_channel(false).await
-    }
-
-    pub async fn latest_rc(&self) -> anyhow::Result<ResolvedRelease> {
-        self.latest_for_channel(true).await
-    }
-
-    async fn latest_for_channel(&self, want_prerelease: bool) -> anyhow::Result<ResolvedRelease> {
-        // Check cache first.
         {
             let cache = self.cache.lock().await;
-            let slot = if want_prerelease {
-                &cache.rc
-            } else {
-                &cache.stable
-            };
-            if let Some((at, rel)) = slot {
+            if let Some((at, rel)) = &cache.stable {
                 if at.elapsed() < CACHE_TTL {
                     return Ok(rel.clone());
                 }
@@ -196,7 +179,7 @@ impl UpgradeResolver {
         }
 
         let url = format!(
-            "https://api.github.com/repos/{}/releases?per_page=20",
+            "https://api.github.com/repos/{}/releases?per_page=10",
             self.repo
         );
         let resp = self
@@ -209,32 +192,17 @@ impl UpgradeResolver {
             anyhow::bail!("github releases list returned {}", resp.status());
         }
         let releases: Vec<GhRelease> = resp.json().await?;
-        let pick = releases
+        let release = releases
             .into_iter()
-            .find(|r| r.prerelease == want_prerelease)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no {} release found in last 20",
-                    if want_prerelease {
-                        "prerelease"
-                    } else {
-                        "stable"
-                    }
-                )
-            })?;
-        let resolved: ResolvedRelease = pick.into();
-        {
-            let mut cache = self.cache.lock().await;
-            let slot = if want_prerelease {
-                &mut cache.rc
-            } else {
-                &mut cache.stable
-            };
-            *slot = Some((Instant::now(), resolved.clone()));
-            cache
-                .by_tag
-                .insert(resolved.tag.clone(), (Instant::now(), resolved.clone()));
-        }
+            .find(|r| !r.prerelease)
+            .ok_or_else(|| anyhow::anyhow!("no stable release found"))?;
+        let resolved: ResolvedRelease = release.into();
+
+        let mut cache = self.cache.lock().await;
+        cache.stable = Some((Instant::now(), resolved.clone()));
+        cache
+            .by_tag
+            .insert(resolved.tag.clone(), (Instant::now(), resolved.clone()));
         Ok(resolved)
     }
 

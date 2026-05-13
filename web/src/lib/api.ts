@@ -457,12 +457,7 @@ export const Api = {
 
   // ---------- Upgrade ----------
   getSystemVersion: () => api<SystemVersionResp>("/api/v1/system/version"),
-  getUpgradeChannel: () => api<UpgradeChannelResp>("/api/v1/system/upgrade_channel"),
-  setUpgradeChannel: (channel: "stable" | "rc") =>
-    api<UpgradeChannelResp>("/api/v1/system/upgrade_channel", {
-      method: "PUT",
-      body: JSON.stringify({ channel }),
-    }),
+  checkLatestVersion: () => api<LatestVersionResp>("/api/v1/system/version/latest"),
   selfUpgradeMaster: (target: string) =>
     api<{ tag: string }>("/api/v1/system/self-upgrade", {
       method: "POST",
@@ -618,13 +613,10 @@ export interface ResolvedRelease {
 
 export interface SystemVersionResp {
   master_version: string;
-  channel: string;
-  latest_stable: ResolvedRelease | null;
-  latest_rc: ResolvedRelease | null;
 }
 
-export interface UpgradeChannelResp {
-  channel: string;
+export interface LatestVersionResp {
+  latest_stable: ResolvedRelease | null;
 }
 
 export interface R2BackupConfigResp {

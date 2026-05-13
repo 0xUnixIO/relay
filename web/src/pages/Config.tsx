@@ -21,10 +21,7 @@ import {
 
 export default function ConfigPage() {
   const { data: cfg, mutate } = useSWR("system-config", Api.getConfig);
-  const { data: sysVersion, mutate: mutateVersion } = useSWR(
-    "system-version",
-    Api.getSystemVersion,
-  );
+  const { data: sysVersion } = useSWR("system-version", Api.getSystemVersion);
   const { data: branding, mutate: mutateBranding } = useSWR(
     "system-branding",
     Api.getBranding,
@@ -37,8 +34,9 @@ export default function ConfigPage() {
   const [saving, setSaving] = useState(false);
   const [retentionDays, setRetentionDays] = useState<number | undefined>(undefined);
   const [retentionSaving, setRetentionSaving] = useState(false);
-  const [channelSaving, setChannelSaving] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [latestRelease, setLatestRelease] = useState<import("@/lib/api").LatestVersionResp | null>(null);
   const [masterMirrorUrl, setMasterMirrorUrl] = useState("");
   const [brandDraft, setBrandDraft] = useState<string | undefined>(undefined);
   const [brandSaving, setBrandSaving] = useState(false);
@@ -110,23 +108,21 @@ export default function ConfigPage() {
     }
   };
 
-  const setChannel = async (next: "stable" | "rc") => {
-    if (sysVersion?.channel === next || channelSaving) return;
-    setChannelSaving(true);
+  const checkUpdate = async () => {
+    setCheckingUpdate(true);
     try {
-      await Api.setUpgradeChannel(next);
-      await mutateVersion();
-      toast.success(`已切换升级通道：${next}`);
+      const result = await Api.checkLatestVersion();
+      setLatestRelease(result);
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : String(e));
+      toast.error(e instanceof ApiError ? e.message : "检查更新失败");
     } finally {
-      setChannelSaving(false);
+      setCheckingUpdate(false);
     }
   };
 
   const masterVersion = sysVersion?.master_version ?? "—";
   const masterTagged = masterVersion.startsWith("v") ? masterVersion : `v${masterVersion}`;
-  const upgradeTarget = sysVersion?.latest_stable?.tag ?? masterTagged;
+  const upgradeTarget = latestRelease?.latest_stable?.tag ?? masterTagged;
   const masterUpgradeCmd = () => {
     const scriptUrl = `${masterMirrorUrl}https://raw.githubusercontent.com/0xUnixIO/relay/main/install.sh`;
     return `curl -fsSL ${scriptUrl} | sudo bash -s -- --update --version ${upgradeTarget}`;
@@ -266,9 +262,7 @@ export default function ConfigPage() {
     return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
   };
 
-  const upgradeTargetTag = selfUpgradeTarget === "stable"
-    ? sysVersion?.latest_stable?.tag
-    : sysVersion?.latest_rc?.tag;
+  const upgradeTargetTag = latestRelease?.latest_stable?.tag;
 
   return (
     <>
@@ -422,42 +416,6 @@ export default function ConfigPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">升级通道</CardTitle>
-          <CardDescription>
-            决定 UI 上「跟随通道」升级节点时使用 stable 还是 rc 的最新版。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex gap-2">
-            {(["stable", "rc"] as const).map((c) => {
-              const active = sysVersion?.channel === c;
-              return (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setChannel(c)}
-                  disabled={channelSaving}
-                  className={`flex-1 rounded-md border px-3 py-2 text-sm text-left ${
-                    active
-                      ? "border-primary bg-primary/5 text-foreground"
-                      : "border-border text-muted-foreground hover:border-foreground/30"
-                  } disabled:opacity-50`}
-                >
-                  <div className="font-medium">{c === "stable" ? "稳定版" : "预发布"}</div>
-                  <div className="text-xs">
-                    {c === "stable"
-                      ? sysVersion?.latest_stable?.tag ?? "（暂无）"
-                      : sysVersion?.latest_rc?.tag ?? "（暂无）"}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             Master 版本
             <Badge variant="outline" className="font-mono text-xs">
@@ -505,28 +463,35 @@ export default function ConfigPage() {
               {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
             </Button>
           </div>
-          {sysVersion?.latest_stable?.tag && (
-            <p className="text-xs text-muted-foreground">
-              最新稳定版：{sysVersion.latest_stable.tag}
-              {sysVersion?.latest_rc?.tag && <> · 最新预发布：{sysVersion.latest_rc.tag}</>}
-            </p>
-          )}
-          <div className="flex gap-2">
-            {(["stable", "rc"] as const).map((ch) => {
-              const tag = ch === "stable" ? sysVersion?.latest_stable?.tag : sysVersion?.latest_rc?.tag;
-              if (!tag) return null;
-              return (
-                <Button
-                  key={ch}
-                  size="sm"
-                  variant="outline"
-                  onClick={() => { setSelfUpgradeTarget(ch); setUpgradeConfirmOpen(true); }}
-                >
-                  <Rocket className="h-3.5 w-3.5 mr-1.5" />
-                  升级到 {tag}
-                </Button>
-              );
-            })}
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={checkUpdate}
+              disabled={checkingUpdate}
+            >
+              {checkingUpdate
+                ? <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                : <RefreshCw className="h-3.5 w-3.5 mr-1.5" />}
+              检查更新
+            </Button>
+            {latestRelease?.latest_stable?.tag && (
+              <>
+                <span className="text-xs text-muted-foreground">
+                  最新版本：{latestRelease.latest_stable.tag}
+                </span>
+                {latestRelease.latest_stable.tag !== masterTagged && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => { setSelfUpgradeTarget("stable"); setUpgradeConfirmOpen(true); }}
+                  >
+                    <Rocket className="h-3.5 w-3.5 mr-1.5" />
+                    升级到 {latestRelease.latest_stable.tag}
+                  </Button>
+                )}
+              </>
+            )}
           </div>
         </CardContent>
       </Card>

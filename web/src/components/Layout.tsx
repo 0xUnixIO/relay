@@ -1,15 +1,12 @@
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import React from "react";
-import { LayoutDashboard, Server, Network, Route as RouteIcon, LogOut, Github, Sun, Moon, Users, Package, User as UserIcon, Settings, Menu, ArrowUpCircle, Loader2, Activity } from "lucide-react";
+import { LayoutDashboard, Server, Network, Route as RouteIcon, LogOut, Github, Sun, Moon, Users, Package, User as UserIcon, Settings, Menu, Activity } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { clearAuth, getUser, getRole } from "@/lib/auth";
 import { cn } from "@/lib/utils";
-import { Api, ApiError } from "@/lib/api";
+import { Api } from "@/lib/api";
 import { useTheme } from "@/lib/theme";
-import { toast } from "sonner";
 import AreaSwitcher, { type Area } from "@/components/AreaSwitcher";
 import BootSplash from "@/components/BootSplash";
 
@@ -92,13 +89,9 @@ export default function Layout() {
   const role = getRole();
   const { theme, toggle } = useTheme();
   const [masterVersion, setMasterVersion] = useState<string | null>(null);
-  const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [brandName, setBrandName] = useState<string>("RELAY");
   const [bootReady, setBootReady] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [upgradeOpen, setUpgradeOpen] = useState(false);
-  const [selfUpgrading, setSelfUpgrading] = useState(false);
-  const upgradePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isAdmin = role === "admin";
 
@@ -134,18 +127,13 @@ export default function Layout() {
     // showing the layout, so users never see a flash of default values
     // (e.g. "RELAY") that gets replaced a beat later.
     let cancelled = false;
-    Promise.allSettled([Api.serverInfo(), Api.getBranding(), Api.getSystemVersion()]).then((results) => {
+    Promise.allSettled([Api.serverInfo(), Api.getBranding()]).then((results) => {
       if (cancelled) return;
       const info = results[0];
       const brand = results[1];
-      const sysVer = results[2];
       if (info.status === "fulfilled") setMasterVersion(info.value.version);
       if (brand.status === "fulfilled") {
         setBrandName(brand.value.brand_name || "RELAY");
-      }
-      if (sysVer.status === "fulfilled") {
-        const tag = sysVer.value.latest_stable?.tag ?? null;
-        setLatestVersion(tag ? tag.replace(/^v/, "") : null);
       }
       setBootReady(true);
     });
@@ -159,28 +147,6 @@ export default function Layout() {
     navigate("/login");
   };
 
-  const doSelfUpgrade = async () => {
-    setSelfUpgrading(true);
-    try {
-      await Api.selfUpgradeMaster(`v${latestVersion!}`);
-    } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : String(e));
-      setSelfUpgrading(false);
-      return;
-    }
-    setTimeout(() => {
-      upgradePollRef.current = setInterval(async () => {
-        try {
-          const r = await fetch("/health", { cache: "no-store" });
-          if (r.ok) {
-            clearInterval(upgradePollRef.current!);
-            upgradePollRef.current = null;
-            window.location.reload();
-          }
-        } catch { /* 还在重启 */ }
-      }, 2000);
-    }, 15_000);
-  };
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
@@ -258,59 +224,14 @@ export default function Layout() {
             <Github className="h-3.5 w-3.5" />
             0xUnixIO/relay
           </a>
-          {masterVersion && (() => {
-            const hasUpdate = latestVersion && latestVersion !== masterVersion;
-            return hasUpdate ? (
-              <button
-                onClick={() => setUpgradeOpen(true)}
-                className="relative text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                title={`新版本可用：v${latestVersion}，点击升级`}
-              >
-                v{masterVersion}
-                <span className="absolute -top-0.5 -right-1.5 h-1.5 w-1.5 rounded-full bg-red-500" />
-              </button>
-            ) : (
-              <span className="relative text-[11px] text-muted-foreground">
-                v{masterVersion}
-              </span>
-            );
-          })()}
+          {masterVersion && (
+            <span className="text-[11px] text-muted-foreground">
+              v{masterVersion}
+            </span>
+          )}
         </div>
       </aside>
 
-      {/* Master 自升级弹窗 */}
-      <Dialog open={upgradeOpen} onOpenChange={(o) => { if (!selfUpgrading) setUpgradeOpen(o); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>发现新版本</DialogTitle>
-            <DialogDescription>
-              升级期间服务将短暂中断（约 15–30 秒），完成后页面自动刷新。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex items-center gap-3 py-2">
-            <Badge variant="outline">当前 v{masterVersion}</Badge>
-            <span className="text-muted-foreground text-sm">→</span>
-            <Badge variant="success">v{latestVersion}</Badge>
-          </div>
-          {selfUpgrading && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              正在升级，请稍候…
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setUpgradeOpen(false)} disabled={selfUpgrading}>
-              取消
-            </Button>
-            <Button onClick={doSelfUpgrade} disabled={selfUpgrading}>
-              {selfUpgrading
-                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                : <ArrowUpCircle className="mr-2 h-4 w-4" />}
-              立即升级
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <div className="flex flex-1 flex-col min-w-0">
         <header className="relative flex h-14 items-center justify-between border-b px-4 md:px-6 bg-background/80 backdrop-blur-sm">

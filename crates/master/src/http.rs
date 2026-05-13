@@ -102,11 +102,8 @@ pub async fn serve(addr: SocketAddr, state: AppState) -> anyhow::Result<()> {
         )
         .route("/api/v1/user-groups/:id/apply", post(apply_group_tunnels))
         .route("/api/v1/system/version", get(get_system_version))
+        .route("/api/v1/system/version/latest", get(check_latest_version))
         .route("/api/v1/system/self-upgrade", post(upgrade_self_handler))
-        .route(
-            "/api/v1/system/upgrade_channel",
-            get(get_upgrade_channel).put(put_upgrade_channel),
-        )
         .route("/api/v1/nodes/:id/setup", post(create_setup))
         .route("/api/v1/nodes/:id/upgrade", post(create_node_upgrade))
         .route(
@@ -4938,73 +4935,29 @@ async fn apply_group_tunnels(
 #[derive(Serialize)]
 struct VersionResp {
     master_version: String,
-    channel: String,
-    latest_stable: Option<crate::upgrade::ResolvedRelease>,
-    latest_rc: Option<crate::upgrade::ResolvedRelease>,
 }
 
-async fn get_system_version(State(s): State<AppState>) -> ApiResult<Json<VersionResp>> {
-    let channel = read_channel(&s.db)
-        .await
-        .unwrap_or_else(|_| "stable".to_string());
-    let stable = s.upgrade_resolver.latest_stable().await.ok();
-    let rc = s.upgrade_resolver.latest_rc().await.ok();
+async fn get_system_version() -> ApiResult<Json<VersionResp>> {
     Ok(Json(VersionResp {
         master_version: env!("CARGO_PKG_VERSION").to_string(),
-        channel,
-        latest_stable: stable,
-        latest_rc: rc,
     }))
 }
 
 #[derive(Serialize)]
-struct ChannelResp {
-    channel: String,
+struct LatestVersionResp {
+    latest_stable: Option<crate::upgrade::ResolvedRelease>,
 }
 
-#[derive(Deserialize)]
-struct ChannelReq {
-    channel: String,
-}
-
-async fn get_upgrade_channel(State(s): State<AppState>) -> ApiResult<Json<ChannelResp>> {
-    let channel = read_channel(&s.db).await?;
-    Ok(Json(ChannelResp { channel }))
-}
-
-async fn put_upgrade_channel(
-    State(s): State<AppState>,
-    Json(req): Json<ChannelReq>,
-) -> ApiResult<Json<ChannelResp>> {
-    if req.channel != "stable" && req.channel != "rc" {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "channel 必须是 stable 或 rc",
-        ));
-    }
-    sqlx::query(
-        "INSERT INTO app_settings (key, value) VALUES ('upgrade_channel', $1)
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
-    )
-    .bind(&req.channel)
-    .execute(&s.db)
-    .await?;
-    Ok(Json(ChannelResp {
-        channel: req.channel,
+async fn check_latest_version(State(s): State<AppState>) -> ApiResult<Json<LatestVersionResp>> {
+    let stable = s.upgrade_resolver.latest_stable().await.ok();
+    Ok(Json(LatestVersionResp {
+        latest_stable: stable,
     }))
-}
-
-async fn read_channel(db: &sqlx::PgPool) -> Result<String, sqlx::Error> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT value FROM app_settings WHERE key = 'upgrade_channel'")
-            .fetch_optional(db)
-            .await?;
-    Ok(row.map(|r| r.0).unwrap_or_else(|| "stable".to_string()))
 }
 
 #[derive(Deserialize)]
 struct SelfUpgradeReq {
-    target: String, // "stable" | "rc" | "vX.Y.Z"
+    target: String, // "stable" | "vX.Y.Z"
 }
 
 #[derive(Serialize)]
