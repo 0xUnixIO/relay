@@ -663,10 +663,26 @@ pub async fn restore_from_r2(
             Some(r) if !r.as_array().map(|a| a.is_empty()).unwrap_or(true) => r,
             _ => continue,
         };
+
+        // 从备份的第一行提取字段名，只 INSERT 备份中存在的列，
+        // 让数据库对新增的 NOT NULL DEFAULT 列自动套用默认值
+        let col_names: Vec<String> = rows
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_object())
+            .map(|obj| obj.keys().map(|k| pg_quote_ident(k)).collect())
+            .unwrap_or_default();
+
+        if col_names.is_empty() {
+            continue;
+        }
+
         let safe = pg_quote_ident(table_name);
+        let col_list = col_names.join(", ");
         let rows_json = serde_json::to_string(rows)?;
         sqlx::query(&format!(
-            "INSERT INTO {safe} SELECT * FROM json_populate_recordset(null::{safe}, $1::json)"
+            "INSERT INTO {safe} ({col_list})
+             SELECT {col_list} FROM json_populate_recordset(null::{safe}, $1::json)"
         ))
         .bind(&rows_json)
         .execute(&mut *tx)
