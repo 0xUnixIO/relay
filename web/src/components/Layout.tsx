@@ -42,7 +42,6 @@ interface NavGroup { group: string | null; items: NavItem[] }
 const adminAreaNav: NavGroup[] = [
   { group: null, items: [
     { to: "/", label: "仪表", icon: LayoutDashboard, end: true },
-    { to: "/overview", label: "概览", icon: Activity },
     { to: "/nodes", label: "节点", icon: Server },
     { to: "/tunnels", label: "隧道", icon: RouteIcon },
     { to: "/users", label: "用户", icon: Users },
