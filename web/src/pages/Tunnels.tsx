@@ -630,8 +630,8 @@ function HopEditor({
       )}
 
       <div className="rounded-md border bg-muted/20">
-        <ScrollArea className="p-3">
-          <svg width={svgW} height={svgH} className="overflow-visible">
+        <div className="overflow-x-auto p-3">
+          <svg width={svgW} height={svgH} className="overflow-visible" style={{ display: "block" }}>
 
             {/* ── 活跃列高亮 ── */}
             {!disabled && picker?.type === "add" &&
@@ -794,7 +794,7 @@ function HopEditor({
               );
             })()}
           </svg>
-        </ScrollArea>
+        </div>
 
         {/* ── Picker 面板 ── */}
         {picker && (
