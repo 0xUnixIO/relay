@@ -1012,14 +1012,31 @@ function TunnelProbeTopology({
     return ms < 80 ? "#059669" : ms < 200 ? "#d97706" : "#e11d48";
   };
 
-  const allOk = segments.every((s) => s.ok);
-  const byTo = new Map<string, number>();
-  for (const s of segments) {
-    if (!s.ok || !s.to) continue;
-    byTo.set(s.to, Math.max(byTo.get(s.to) ?? 0, s.latency_us));
+  // 枚举所有完整源→目标路径（仅 ok 边），计算最优/最差/平均
+  const adj2 = new Map<string, Array<{ to: string; us: number }>>();
+  for (const e of edges) {
+    if (!e.ok) continue;
+    const list = adj2.get(e.from) ?? [];
+    list.push({ to: e.to, us: e.us });
+    adj2.set(e.from, list);
   }
-  const total = Array.from(byTo.values()).reduce((a, b) => a + b, 0);
-  const totalColor = total / 1000 < 80 ? "#059669" : total / 1000 < 200 ? "#d97706" : "#e11d48";
+  const pathRoots = [...layerOf.keys()].filter((n) => !(inDegree.get(n) ?? 0));
+  const allPathUs: number[] = [];
+  const collectPaths = (node: string, acc: number, visited: Set<string>) => {
+    const nexts = adj2.get(node);
+    if (!nexts || nexts.length === 0) { allPathUs.push(acc); return; }
+    for (const { to, us } of nexts) {
+      if (!visited.has(to)) {
+        visited.add(to);
+        collectPaths(to, acc + us, visited);
+        visited.delete(to);
+      }
+    }
+  };
+  for (const root of pathRoots) collectPaths(root, 0, new Set([root]));
+  const bestUs  = allPathUs.length ? Math.min(...allPathUs) : 0;
+  const worstUs = allPathUs.length ? Math.max(...allPathUs) : 0;
+  const avgUs   = allPathUs.length ? allPathUs.reduce((a, b) => a + b, 0) / allPathUs.length : 0;
 
   // 适应容器
   function fitToContainer() {
@@ -1160,6 +1177,8 @@ function TunnelProbeTopology({
               const mx = (x1 + x2) / 2;
               const color = e.ok ? latColor(e.us) : "#e11d48";
               const midY = (y1 + y2) / 2;
+              // 交叉线：向下穿越偏上、向上穿越偏下，使两条线标签错开
+              const labelY = midY + (y1 < y2 ? -12 : y1 > y2 ? 12 : 0) - 4;
               return (
                 <g key={i}>
                   <path
@@ -1167,8 +1186,14 @@ function TunnelProbeTopology({
                     fill="none" stroke={color} strokeWidth={1.5} opacity={0.8}
                     strokeDasharray={e.ok ? undefined : "4 2"}
                   />
+                  <rect
+                    x={mx - 22} y={labelY - 9}
+                    width={44} height={12}
+                    fill="hsl(var(--background))"
+                    rx={2} opacity={0.88}
+                  />
                   <text
-                    x={mx} y={midY - 4}
+                    x={mx} y={labelY}
                     textAnchor="middle" fontSize={9} fill={color}
                     fontFamily="ui-monospace,monospace" fontWeight={600}
                   >
@@ -1198,13 +1223,21 @@ function TunnelProbeTopology({
         </div>
       </div>
 
-      {/* 合计延迟 */}
-      {allOk && segments.length > 0 && (
-        <div className="flex items-center justify-between border-t pt-2 text-sm">
-          <span className="text-muted-foreground">合计</span>
-          <span className="font-mono tabular-nums font-semibold" style={{ color: totalColor }}>
-            {(total / 1000).toFixed(1)} ms
-          </span>
+      {/* 路径延迟统计 */}
+      {allPathUs.length > 0 && (
+        <div className="border-t pt-2 text-sm space-y-1">
+          {([
+            { label: "最优", us: bestUs },
+            { label: "平均", us: avgUs },
+            { label: "最差", us: worstUs },
+          ] as const).map(({ label, us }) => (
+            <div key={label} className="flex items-center justify-between">
+              <span className="text-muted-foreground">{label}</span>
+              <span className="font-mono tabular-nums font-semibold" style={{ color: latColor(us) }}>
+                {(us / 1000).toFixed(1)} ms
+              </span>
+            </div>
+          ))}
         </div>
       )}
 
