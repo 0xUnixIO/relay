@@ -35,13 +35,15 @@ pub async fn handle_upgrade_command(cmd: Command, tx: mpsc::Sender<NodeMessage>)
         return;
     }
 
-    let _guard = upgrade_lock().try_lock();
-    if _guard.is_err() {
-        let reason = "another upgrade is already in progress";
-        tracing::warn!("upgrade: refused, {reason}");
-        send_report(&tx, job_id, "failed", reason).await;
-        return;
-    }
+    let guard = match upgrade_lock().try_lock() {
+        Ok(g) => g,
+        Err(_) => {
+            let reason = "another upgrade is already in progress";
+            tracing::warn!("upgrade: refused, {reason}");
+            send_report(&tx, job_id, "failed", reason).await;
+            return;
+        }
+    };
 
     let asset_url = match std::env::consts::ARCH {
         "x86_64" => amd64_url,
@@ -56,15 +58,17 @@ pub async fn handle_upgrade_command(cmd: Command, tx: mpsc::Sender<NodeMessage>)
     tracing::info!(job_id, %tag, "upgrade: accepted, downloading in background");
     send_report(&tx, job_id, "accepted", "").await;
 
-    // 后台执行：下载 → 验证 → 原子替换 → exit(0)
     tokio::spawn(async move {
+        let _guard = guard; // 持有锁直到下载完成或进程退出
         match do_node_upgrade(&asset_url, &sha256_url, &tag).await {
             Ok(()) => {
                 tracing::info!(job_id, %tag, "upgrade: binary replaced, exiting for systemd restart");
                 std::process::exit(0);
             }
             Err(e) => {
-                tracing::error!(job_id, error = %e, "upgrade failed");
+                let reason = format!("{e:#}");
+                tracing::error!(job_id, error = %reason, "upgrade failed");
+                send_report(&tx, job_id, "failed", &reason).await;
             }
         }
     });
