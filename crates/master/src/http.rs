@@ -5448,12 +5448,13 @@ async fn create_node_upgrade(
             ApiError::new(StatusCode::BAD_GATEWAY, format!("无法解析目标版本：{e}"))
         })?;
 
-    // 3a) Reject if node is already on the target version. Otherwise the
-    //     heartbeat-success scan would falsely succeed this job on the very
-    //     next heartbeat without the updater ever running.
-    if let Some(curr) = from_version.as_deref() {
+    // 3a) Reject if node is already on the target version, or version unknown.
+    let curr_version = from_version
+        .as_deref()
+        .ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "节点版本未知，请等待心跳上报后再试"))?;
+    {
         let target_norm = resolved.tag.strip_prefix('v').unwrap_or(&resolved.tag);
-        if curr == target_norm {
+        if curr_version == target_norm {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 format!("节点已经是目标版本 {}", resolved.tag),
