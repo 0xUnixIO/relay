@@ -29,6 +29,9 @@ impl CounterDeltas {
     /// Returns (delta_in, delta_out) given new monotonic counter values.
     /// Keyed by (node_id, forward_id, hop_index) so multi-hop forwards
     /// can't pollute each other.
+    ///
+    /// 首次见到某个 key（master 重启后内存清空）时返回 (0, 0) 并以当前值为
+    /// 基线，避免把节点已累积的历史字节数误计为新增流量。
     pub async fn record(
         &self,
         node_id: &str,
@@ -39,13 +42,16 @@ impl CounterDeltas {
     ) -> (u64, u64) {
         let key = (node_id.to_string(), forward_id, hop_index);
         let mut g = self.inner.write().await;
-        let (last_in, last_out) = g.get(&key).copied().unwrap_or((0, 0));
-        let d_in = bytes_in.saturating_sub(last_in);
-        let d_out = bytes_out.saturating_sub(last_out);
+        let Some((last_in, last_out)) = g.get(&key).copied() else {
+            // 首次上报（master 刚重启），只建立基线，不产生计费增量。
+            g.insert(key, (bytes_in, bytes_out));
+            return (0, 0);
+        };
         let (d_in, d_out) = if bytes_in < last_in || bytes_out < last_out {
+            // 节点重启，计数器归零；以当前值为增量。
             (bytes_in, bytes_out)
         } else {
-            (d_in, d_out)
+            (bytes_in - last_in, bytes_out - last_out)
         };
         g.insert(key, (bytes_in, bytes_out));
         (d_in, d_out)
