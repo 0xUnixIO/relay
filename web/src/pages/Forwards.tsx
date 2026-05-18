@@ -445,6 +445,7 @@ export default function ForwardsPage() {
                 <TableHead className="hidden sm:table-cell w-[12rem]">上游</TableHead>
                 <TableHead className="hidden sm:table-cell w-px whitespace-nowrap text-right">下载</TableHead>
                 <TableHead className="hidden sm:table-cell w-px whitespace-nowrap text-right">上传</TableHead>
+                <TableHead className="hidden sm:table-cell w-px whitespace-nowrap text-right">计费流量</TableHead>
                 <TableHead className="hidden sm:table-cell w-px whitespace-nowrap text-right">活跃连接</TableHead>
                 <TableHead className="w-px whitespace-nowrap text-right">操作</TableHead>
               </TableRow>
@@ -452,13 +453,13 @@ export default function ForwardsPage() {
             <TableBody>
               {forwards.length === 0 ? (
                 <TableRow className="hover:bg-transparent even:bg-transparent">
-                  {/* 移动端 3 列（名称、入口、操作），sm 以上 7 列 */}
+                  {/* 移动端 3 列（名称、入口、操作），sm 以上 8 列 */}
                   <TableCell colSpan={3} className="text-center sm:hidden">
                     {searchQuery || filterTunnelId
                       ? <EmptyState icon={Search} title="无匹配结果" description="尝试调整搜索词或筛选条件。" compact />
                       : <EmptyState icon={Network} title="暂无转发" description="点击右上角「新建转发」按钮创建。" compact />}
                   </TableCell>
-                  <TableCell colSpan={7} className="text-center hidden sm:table-cell">
+                  <TableCell colSpan={8} className="text-center hidden sm:table-cell">
                     {searchQuery || filterTunnelId
                       ? <EmptyState icon={Search} title="无匹配结果" description="尝试调整搜索词或筛选条件。" compact />
                       : <EmptyState icon={Network} title="暂无转发" description="点击右上角「新建转发」按钮创建。" compact />}
@@ -558,6 +559,10 @@ export default function ForwardsPage() {
                         {rates.get(f.id)?.outRate != null && rates.get(f.id)!.outRate > 0 && (
                           <div className="text-sky-500">{fmtBytes(rates.get(f.id)!.outRate)}/s</div>
                         )}
+                      </TableCell>
+                      {/* 计费流量列 — 移动端隐藏 */}
+                      <TableCell className="hidden sm:table-cell text-right font-mono text-xs whitespace-nowrap">
+                        {fmtBytes(f.in_flow_bytes + f.out_flow_bytes)}
                       </TableCell>
                       {/* 活跃连接列 — 移动端隐藏 */}
                       <TableCell className="hidden sm:table-cell text-right font-mono text-xs whitespace-nowrap">{f.active_connections}</TableCell>
