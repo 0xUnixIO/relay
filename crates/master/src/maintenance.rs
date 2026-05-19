@@ -43,6 +43,7 @@ async fn run(db: &PgPool) -> sqlx::Result<()> {
         ("node_heartbeats", "ts", retention_days),
         ("node_availability", "recorded_at", 90),
         ("connection_logs", "connected_at", 1),
+        ("forward_probe_samples", "probed_at", 30),
     ] {
         let deleted = sqlx::query(&format!(
             "DELETE FROM {table} WHERE {col} < now() - ({days} * INTERVAL '1 day')",

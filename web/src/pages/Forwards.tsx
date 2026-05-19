@@ -1128,7 +1128,7 @@ function UpstreamProbeStatsPanel({ forwardId }: { forwardId: string }) {
   );
 
   const fmtLatency = (us: number | null) =>
-    us == null ? "—" : us < 1000 ? `${us} µs` : `${(us / 1000).toFixed(1)} ms`;
+    us == null ? "—" : us < 1000 ? `${Math.round(us)} µs` : `${(us / 1000).toFixed(1)} ms`;
 
   const latColor = (us: number | null) => {
     if (us == null) return "";
