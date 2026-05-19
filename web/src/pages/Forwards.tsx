@@ -838,7 +838,7 @@ export default function ForwardsPage() {
             </DialogTitle>
             <DialogDescription>客户端连接历史，包含活跃及已断开连接</DialogDescription>
           </DialogHeader>
-          {connLogsTarget && <ConnectionLogsPanel forwardId={connLogsTarget.id} />}
+          {connLogsTarget && <ConnectionLogsPanel forwardId={connLogsTarget.id} nodes={nodes} />}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setConnLogsTarget(null)}>关闭</Button>
           </DialogFooter>
@@ -1043,7 +1043,8 @@ function ForwardStatsChart({ forwardId }: { forwardId: string }) {
 
 // ── 连接日志面板 ─────────────────────────────────────────────────────────────
 
-function ConnectionLogsPanel({ forwardId }: { forwardId: string }) {
+function ConnectionLogsPanel({ forwardId, nodes }: { forwardId: string; nodes: NodeInfo[] }) {
+  const nodeById = new Map(nodes.map((n) => [n.id, n.hostname]));
   const [page, setPage] = useState(1);
   const limit = 50;
   const { data, isLoading } = useSWR(
@@ -1095,8 +1096,8 @@ function ConnectionLogsPanel({ forwardId }: { forwardId: string }) {
           <tbody className="divide-y">
             {data.map((log) => (
               <tr key={log.id} className="hover:bg-muted/30 transition-colors">
-                <td className="px-3 py-2 font-mono">{log.client_ip}</td>
-                <td className="px-3 py-2 text-muted-foreground hidden sm:table-cell font-mono truncate max-w-[8rem]">{log.node_id.slice(0, 12)}</td>
+                <td className="px-3 py-2 font-mono">{log.client_ip.replace(/^::ffff:/, "")}</td>
+                <td className="px-3 py-2 text-muted-foreground hidden sm:table-cell truncate max-w-[8rem]">{nodeById.get(log.node_id) ?? log.node_id.slice(0, 12)}</td>
                 <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{fmt(log.connected_at)}</td>
                 <td className="px-3 py-2 whitespace-nowrap">{duration(log)}</td>
                 <td className="px-3 py-2 text-right font-mono text-muted-foreground hidden sm:table-cell">{fmtBytes(log.bytes_in)}</td>
