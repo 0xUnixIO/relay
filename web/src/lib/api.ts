@@ -737,6 +737,10 @@ export interface ForwardStatBucket {
   bytes_in:   number;
   bytes_out:  number;
   peak_conns: number;
+  /** 计费流量入（bytes_in × traffic_ratio） */
+  billed_in:  number;
+  /** 计费流量出（bytes_out × traffic_ratio） */
+  billed_out: number;
 }
 
 export interface NodeTrafficItem {

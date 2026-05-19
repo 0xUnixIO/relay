@@ -4061,6 +4061,10 @@ struct StatsBucket {
     bytes_in: i64,
     bytes_out: i64,
     peak_conns: i32,
+    /// 计费流量入 = bytes_in × traffic_ratio（入口节点均值），历史趋势用
+    billed_in: i64,
+    /// 计费流量出 = bytes_out × traffic_ratio（入口节点均值），历史趋势用
+    billed_out: i64,
 }
 
 async fn forward_stats_history(
@@ -4075,6 +4079,18 @@ async fn forward_stats_history(
         Some("6h") => (120_f64, "6 hours"),
         _ => (60_f64, "1 hour"),
     };
+
+    // 先查入口节点（hop_index=0）的 traffic_ratio 均值，作为计费系数
+    let ratio: f64 = sqlx::query_scalar(
+        "SELECT COALESCE(AVG(n.traffic_ratio), 1.0)
+           FROM forward_ports fp
+           JOIN nodes n ON n.id = fp.node_id
+          WHERE fp.forward_id = $1 AND fp.hop_index = 0",
+    )
+    .bind(id)
+    .fetch_one(&s.db)
+    .await
+    .unwrap_or(1.0);
 
     let rows = sqlx::query(
         "SELECT
@@ -4098,11 +4114,17 @@ async fn forward_stats_history(
     use sqlx::Row;
     let buckets: Vec<StatsBucket> = rows
         .iter()
-        .map(|r| StatsBucket {
-            ts: r.get("ts"),
-            bytes_in: r.get("bytes_in"),
-            bytes_out: r.get("bytes_out"),
-            peak_conns: r.get("peak_conns"),
+        .map(|r| {
+            let bytes_in: i64 = r.get("bytes_in");
+            let bytes_out: i64 = r.get("bytes_out");
+            StatsBucket {
+                ts: r.get("ts"),
+                bytes_in,
+                bytes_out,
+                peak_conns: r.get("peak_conns"),
+                billed_in: (bytes_in as f64 * ratio).round() as i64,
+                billed_out: (bytes_out as f64 * ratio).round() as i64,
+            }
         })
         .collect();
 
@@ -4140,11 +4162,18 @@ async fn global_traffic_stats_handler(
     use sqlx::Row;
     let buckets: Vec<StatsBucket> = rows
         .iter()
-        .map(|r| StatsBucket {
-            ts: r.get("ts"),
-            bytes_in: r.get("bytes_in"),
-            bytes_out: r.get("bytes_out"),
-            peak_conns: r.get("peak_conns"),
+        .map(|r| {
+            let bytes_in: i64 = r.get("bytes_in");
+            let bytes_out: i64 = r.get("bytes_out");
+            StatsBucket {
+                ts: r.get("ts"),
+                bytes_in,
+                bytes_out,
+                peak_conns: r.get("peak_conns"),
+                // node_stats 不含 traffic_ratio，全局图不做计费换算
+                billed_in: bytes_in,
+                billed_out: bytes_out,
+            }
         })
         .collect();
 

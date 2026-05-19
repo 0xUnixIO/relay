@@ -923,10 +923,16 @@ function ForwardStatsChart({ forwardId }: { forwardId: string }) {
   };
 
 
+  // 判断 traffic_ratio 是否全为 1（等于原始字节），避免重复展示计费系列
+  const hasBilling = data.some(
+    (b) => b.billed_in !== b.bytes_in || b.billed_out !== b.bytes_out,
+  );
+
   const chartData = data.map((b) => ({
     ts: fmt(b.ts),
     下载: b.bytes_in,
     上传: b.bytes_out,
+    ...(hasBilling && { 计费入: b.billed_in, 计费出: b.billed_out }),
   }));
 
   return (
@@ -957,6 +963,18 @@ function ForwardStatsChart({ forwardId }: { forwardId: string }) {
                 <stop offset="5%"  stopColor="hsl(199 78% 44%)" stopOpacity={0.3} />
                 <stop offset="95%" stopColor="hsl(199 78% 44%)" stopOpacity={0} />
               </linearGradient>
+              {hasBilling && (
+                <>
+                  <linearGradient id="gbi" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor="hsl(142 76% 36%)" stopOpacity={0.08} />
+                    <stop offset="95%" stopColor="hsl(142 76% 36%)" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="gbo" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor="hsl(199 78% 44%)" stopOpacity={0.08} />
+                    <stop offset="95%" stopColor="hsl(199 78% 44%)" stopOpacity={0} />
+                  </linearGradient>
+                </>
+              )}
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
             <XAxis dataKey="ts" tick={{ fontSize: 11 }} tickLine={false} />
@@ -967,9 +985,58 @@ function ForwardStatsChart({ forwardId }: { forwardId: string }) {
             />
             <Area type="monotone" dataKey="下载" stroke="hsl(142 76% 36%)" fill="url(#gi)" strokeWidth={1.5} dot={false} />
             <Area type="monotone" dataKey="上传" stroke="hsl(199 78% 44%)"  fill="url(#go)" strokeWidth={1.5} dot={false} />
+            {hasBilling && (
+              <>
+                <Area type="monotone" dataKey="计费入" stroke="hsl(142 76% 36%)" fill="url(#gbi)" strokeWidth={1} strokeDasharray="4 2" dot={false} />
+                <Area type="monotone" dataKey="计费出" stroke="hsl(199 78% 44%)" fill="url(#gbo)" strokeWidth={1} strokeDasharray="4 2" dot={false} />
+              </>
+            )}
           </AreaChart>
         </ResponsiveContainer>
       )}
+      {data.length > 0 && (() => {
+        const sumIn    = data.reduce((s, b) => s + b.bytes_in,  0);
+        const sumOut   = data.reduce((s, b) => s + b.bytes_out, 0);
+        const billedIn  = data.reduce((s, b) => s + b.billed_in,  0);
+        const billedOut = data.reduce((s, b) => s + b.billed_out, 0);
+        const showBilling = hasBilling;
+        return (
+          <div className={`grid gap-3 text-xs ${showBilling ? "grid-cols-2" : "grid-cols-1"}`}>
+            <div className="rounded-md border p-2 space-y-1">
+              <div className="text-muted-foreground font-medium">此时段实际传输</div>
+              <div className="flex justify-between">
+                <span className="text-emerald-600 dark:text-emerald-400">下载</span>
+                <span className="font-mono">{fmtBytes(sumIn)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-sky-500">上传</span>
+                <span className="font-mono">{fmtBytes(sumOut)}</span>
+              </div>
+              <div className="flex justify-between border-t pt-1 mt-1">
+                <span className="text-muted-foreground">合计</span>
+                <span className="font-mono font-medium">{fmtBytes(sumIn + sumOut)}</span>
+              </div>
+            </div>
+            {showBilling && (
+              <div className="rounded-md border p-2 space-y-1">
+                <div className="text-muted-foreground font-medium">此时段计费流量</div>
+                <div className="flex justify-between">
+                  <span className="text-emerald-600 dark:text-emerald-400">下载</span>
+                  <span className="font-mono">{fmtBytes(billedIn)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sky-500">上传</span>
+                  <span className="font-mono">{fmtBytes(billedOut)}</span>
+                </div>
+                <div className="flex justify-between border-t pt-1 mt-1">
+                  <span className="text-muted-foreground">合计</span>
+                  <span className="font-mono font-medium">{fmtBytes(billedIn + billedOut)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
