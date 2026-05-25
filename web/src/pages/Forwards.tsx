@@ -52,6 +52,7 @@ type Form = {
   in_port: string;
   remote_addrs: string;
   lb_strategy: string;
+  max_connections: string;
 };
 
 const emptyForm = (): Form => ({
@@ -60,6 +61,7 @@ const emptyForm = (): Form => ({
   in_port: "",
   remote_addrs: "",
   lb_strategy: "round_robin",
+  max_connections: "",
 });
 
 type ProbeState =
@@ -252,6 +254,7 @@ export default function ForwardsPage() {
       in_port: String(f.in_port ?? ""),
       remote_addrs: (f.remote_addrs ?? []).join("\n"),
       lb_strategy: f.lb_strategy || "round_robin",
+      max_connections: f.max_connections > 0 ? String(f.max_connections) : "",
     });
     setHostProbe({ status: "idle" });
     setOpen(true);
@@ -264,6 +267,7 @@ export default function ForwardsPage() {
     const inPort = form.in_port.trim() ? Number(form.in_port) : undefined;
     setSaving(true);
     try {
+      const maxConn = form.max_connections.trim() ? Number(form.max_connections) : undefined;
       if (editing) {
         const inPort = form.in_port.trim() ? Number(form.in_port) : undefined;
         await Api.updateForward(editing.id, {
@@ -272,6 +276,7 @@ export default function ForwardsPage() {
           in_port: inPort,
           remote_addrs: parsed,
           lb_strategy: form.lb_strategy || undefined,
+          max_connections: maxConn,
         });
       } else {
         if (!form.tunnel_id) { toast.error("请选择隧道"); setSaving(false); return; }
@@ -281,6 +286,7 @@ export default function ForwardsPage() {
           in_port: inPort,
           remote_addrs: parsed,
           lb_strategy: form.lb_strategy || undefined,
+          max_connections: maxConn,
         });
         if (created.port_warnings?.length) {
           for (const w of created.port_warnings) toast.warning(w);
@@ -782,6 +788,16 @@ export default function ForwardsPage() {
                 </Select>
               </div>
             )}
+            <div className="space-y-1.5">
+              <Label>最大连接数（留空或 0 表示无限制）</Label>
+              <Input
+                type="number"
+                min={0}
+                placeholder="不限制"
+                value={form.max_connections}
+                onChange={(e) => setForm({ ...form, max_connections: e.target.value })}
+              />
+            </div>
           </div>
 
           <DialogFooter>

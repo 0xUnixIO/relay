@@ -586,12 +586,11 @@ async fn start_tunnel(
     let handle = match Protocol::try_from(spec.protocol).unwrap_or(Protocol::Tcp) {
         Protocol::Tcp => {
             let listener = bind_tcp_listener(listen, spec.v6_only)?;
-            let max = if spec.max_connections == 0 {
-                1024
+            let sem = if spec.max_connections > 0 {
+                Some(Arc::new(Semaphore::new(spec.max_connections as usize)))
             } else {
-                spec.max_connections as usize
+                None
             };
-            let sem = Arc::new(Semaphore::new(max));
             let is_entry = spec.hop_index == 0;
             tokio::spawn(run_tcp(
                 spec.id.clone(),
@@ -636,7 +635,7 @@ async fn run_tcp(
     listener: TcpListener,
     upstreams: Arc<Vec<SocketAddr>>,
     cursor: Arc<AtomicUsize>,
-    sem: Arc<Semaphore>,
+    sem: Option<Arc<Semaphore>>,
     cancel: CancellationToken,
     counters: Arc<Counters>,
     acl: Acl,
@@ -647,9 +646,13 @@ async fn run_tcp(
     conn_event_buf: Arc<Mutex<Vec<NodeMessage>>>,
 ) {
     loop {
-        let permit = match sem.clone().acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => break,
+        let permit = if let Some(ref s) = sem {
+            match s.clone().acquire_owned().await {
+                Ok(p) => Some(p),
+                Err(_) => break,
+            }
+        } else {
+            None
         };
         tokio::select! {
             _ = cancel.cancelled() => break,
