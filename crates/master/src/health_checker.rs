@@ -9,7 +9,6 @@
 //! 节点收到后，路由时跳过被驱逐的 upstream，但仍探测它们以感知恢复。
 
 use sqlx::PgPool;
-use tracing;
 
 use crate::registry::NodeRegistry;
 
