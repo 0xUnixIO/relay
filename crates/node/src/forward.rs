@@ -167,6 +167,8 @@ struct TunnelSpec {
     acl: Acl,
     speed_limit_kbps: u64,
     v6_only: bool,
+    /// 被 master 驱逐的 upstream 地址集合：路由时跳过，但仍正常探测以便感知恢复。
+    ejected_upstream_addrs: Vec<String>,
 }
 
 impl From<&ForwardConfig> for TunnelSpec {
@@ -189,6 +191,7 @@ impl From<&ForwardConfig> for TunnelSpec {
             acl: Acl::new(&t.allow_cidrs, &t.deny_cidrs),
             speed_limit_kbps: t.speed_limit_kbps,
             v6_only: t.v6_only,
+            ejected_upstream_addrs: t.ejected_upstream_addrs.clone(),
         }
     }
 }
@@ -515,17 +518,45 @@ async fn start_tunnel(
         );
     }
 
-    let upstreams = Arc::new(resolved);
+    // probe_upstreams = 全量（含被驱逐），用于探测和恢复感知
+    // routing_upstreams = 健康子集，用于实际路由；若全部被驱逐则降级为全量
+    // routing_to_probe = routing_upstreams 中每个元素在 probe_upstreams 中的索引
+    let probe_upstreams = Arc::new(resolved);
+    let ejected_set: std::collections::HashSet<&str> = spec
+        .ejected_upstream_addrs
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
+    let (routing_resolved, routing_to_probe_raw): (Vec<SocketAddr>, Vec<usize>) = spec
+        .upstream_addrs
+        .iter()
+        .enumerate()
+        .zip(probe_upstreams.iter())
+        .filter(|((_, addr), _)| !ejected_set.contains(addr.as_str()))
+        .map(|((i, _), &sa)| (sa, i))
+        .unzip();
+    let (routing_upstreams, routing_to_probe) = if routing_resolved.is_empty() {
+        // 全部被驱逐：降级使用全量，probe index = identity
+        let n = probe_upstreams.len();
+        (
+            probe_upstreams.clone(),
+            Arc::new((0..n).collect::<Vec<_>>()),
+        )
+    } else {
+        (Arc::new(routing_resolved), Arc::new(routing_to_probe_raw))
+    };
+
     let cursor = Arc::new(AtomicUsize::new(0));
 
-    // EMA 延迟缓存：每个 upstream 一个 u64（微秒）。u64::MAX 表示暂无数据。
-    // alpha = 1/4：new_ema = (sample + old * 3) / 4
+    // EMA 延迟缓存：按 probe_upstreams 索引，探测任务写入，路由通过 routing_to_probe 查询。
+    // u64::MAX 表示暂无数据；alpha = 1/4：new_ema = (sample + old * 3) / 4
     const PROBE_FAILURE_US: u64 = 5_000_000; // 失败探测惩罚 5s
-    let latency_map: Arc<RwLock<Vec<u64>>> = Arc::new(RwLock::new(vec![u64::MAX; upstreams.len()]));
+    let latency_map: Arc<RwLock<Vec<u64>>> =
+        Arc::new(RwLock::new(vec![u64::MAX; probe_upstreams.len()]));
 
-    // 后台 probe 任务：定期 TCP-connect 所有 upstream，更新 EMA 缓存并上报给 master。
+    // 后台 probe 任务：探测全量 upstream（含被驱逐的），上报给 master 以感知恢复。
     {
-        let upstreams = upstreams.clone();
+        let upstreams = probe_upstreams.clone();
         let upstream_addrs = spec.upstream_addrs.clone();
         let forward_id = spec.forward_id.clone();
         let probe_buf = probe_buf.clone();
@@ -596,7 +627,8 @@ async fn start_tunnel(
                 spec.id.clone(),
                 spec.forward_id.clone(),
                 listener,
-                upstreams,
+                routing_upstreams,
+                routing_to_probe,
                 cursor,
                 sem,
                 cancel,
@@ -614,7 +646,8 @@ async fn start_tunnel(
             tokio::spawn(run_udp(
                 spec.id.clone(),
                 sock,
-                upstreams,
+                routing_upstreams,
+                routing_to_probe,
                 cursor,
                 cancel,
                 counters,
@@ -634,6 +667,7 @@ async fn run_tcp(
     forward_id: String,
     listener: TcpListener,
     upstreams: Arc<Vec<SocketAddr>>,
+    routing_to_probe: Arc<Vec<usize>>,
     cursor: Arc<AtomicUsize>,
     sem: Option<Arc<Semaphore>>,
     cancel: CancellationToken,
@@ -687,6 +721,7 @@ async fn run_tcp(
                         let id = id.clone();
                         let counters = counters.clone();
                         let upstreams = upstreams.clone();
+                        let rtp = routing_to_probe.clone();
                         let cursor = cursor.clone();
                         let rate_limiter = rate_limiter.clone();
                         let lb = lb_strategy.clone();
@@ -699,7 +734,7 @@ async fn run_tcp(
                             // 记录连接开始时的字节数，用于计算本次连接的增量
                             let bytes_in_before  = counters.bytes_in.load(Ordering::Relaxed);
                             let bytes_out_before = counters.bytes_out.load(Ordering::Relaxed);
-                            let res = pipe_tcp(inbound, upstreams, cursor, &counters, &cancel, &rate_limiter, &lb, &lmap).await;
+                            let res = pipe_tcp(inbound, upstreams, &rtp, cursor, &counters, &cancel, &rate_limiter, &lb, &lmap).await;
                             counters.active.fetch_sub(1, Ordering::Relaxed);
 
                             if is_entry {
@@ -757,6 +792,7 @@ fn apply_keepalive(stream: &TcpStream) -> std::io::Result<()> {
 async fn pipe_tcp(
     inbound: TcpStream,
     upstreams: Arc<Vec<SocketAddr>>,
+    routing_to_probe: &[usize],
     cursor: Arc<AtomicUsize>,
     counters: &Counters,
     cancel: &CancellationToken,
@@ -773,15 +809,22 @@ async fn pipe_tcp(
     let start = match lb_strategy {
         "primary_backup" => 0,
         "least_latency" | "best" => {
-            // 冷启动期（全部 u64::MAX）降级为 round-robin，避免全打 index 0
+            // 通过 routing_to_probe 映射查 EMA 延迟，冷启动期降级为 round-robin
             latency_map
                 .read()
                 .ok()
                 .and_then(|m| {
-                    if m.iter().all(|&v| v == u64::MAX) {
+                    if routing_to_probe
+                        .iter()
+                        .all(|&pi| m.get(pi).copied().unwrap_or(u64::MAX) == u64::MAX)
+                    {
                         return None;
                     }
-                    m.iter().enumerate().min_by_key(|(_, &v)| v).map(|(i, _)| i)
+                    routing_to_probe
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, &pi)| m.get(pi).copied().unwrap_or(u64::MAX))
+                        .map(|(i, _)| i)
                 })
                 .unwrap_or_else(|| cursor.fetch_add(1, Ordering::Relaxed) % n)
         }
@@ -967,6 +1010,7 @@ async fn run_udp(
     id: String,
     sock: UdpSocket,
     upstreams: Arc<Vec<SocketAddr>>,
+    routing_to_probe: Arc<Vec<usize>>,
     cursor: Arc<AtomicUsize>,
     cancel: CancellationToken,
     counters: Arc<Counters>,
@@ -1048,8 +1092,10 @@ async fn run_udp(
                         "primary_backup" => 0,
                         "least_latency" | "best" => {
                             latency_map.read().ok().and_then(|m| {
-                                if m.iter().all(|&v| v == u64::MAX) { return None; }
-                                m.iter().enumerate().min_by_key(|(_, &v)| v).map(|(i, _)| i)
+                                if routing_to_probe.iter().all(|&pi| m.get(pi).copied().unwrap_or(u64::MAX) == u64::MAX) { return None; }
+                                routing_to_probe.iter().enumerate()
+                                    .min_by_key(|(_, &pi)| m.get(pi).copied().unwrap_or(u64::MAX))
+                                    .map(|(i, _)| i)
                             }).unwrap_or_else(|| cursor.fetch_add(1, Ordering::Relaxed) % n)
                         }
                         _ => cursor.fetch_add(1, Ordering::Relaxed) % n,

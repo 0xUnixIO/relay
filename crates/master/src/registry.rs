@@ -323,6 +323,27 @@ pub async fn build_config_snapshot(db: &PgPool, node_id: &str) -> sqlx::Result<C
         }
     }
 
+    // Stage 3: 获取被驱逐的 upstream 地址（ejected_at IS NOT NULL）
+    let fwd_ids: Vec<i64> = {
+        let mut ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        for r in &hop_rows {
+            ids.insert(r.0);
+        }
+        ids.into_iter().collect()
+    };
+    let ejected_rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT forward_id, upstream_addr FROM forward_upstream_health \
+          WHERE forward_id = ANY($1) AND ejected_at IS NOT NULL",
+    )
+    .bind(&fwd_ids)
+    .fetch_all(db)
+    .await?;
+
+    let mut ejected_map: HashMap<i64, Vec<String>> = HashMap::new();
+    for (fid, addr) in ejected_rows {
+        ejected_map.entry(fid).or_default().push(addr);
+    }
+
     let forwards: Vec<ForwardConfig> = hop_rows
         .into_iter()
         .map(
@@ -363,6 +384,13 @@ pub async fn build_config_snapshot(db: &PgPool, node_id: &str) -> sqlx::Result<C
                     (Vec::new(), Vec::new())
                 };
 
+                // 仅最终跳的 upstream 才有健康驱逐；中间跳是中继节点，不做驱逐
+                let ejected_upstream_addrs = if hop_index == last_idx {
+                    ejected_map.get(&fid).cloned().unwrap_or_default()
+                } else {
+                    vec![]
+                };
+
                 ForwardConfig {
                     forward_id: fid.to_string(),
                     hop_index: hop_index as u32,
@@ -388,6 +416,7 @@ pub async fn build_config_snapshot(db: &PgPool, node_id: &str) -> sqlx::Result<C
                     } else {
                         0
                     },
+                    ejected_upstream_addrs,
                 }
             },
         )
@@ -416,6 +445,9 @@ pub async fn build_config_snapshot(db: &PgPool, node_id: &str) -> sqlx::Result<C
             h.update(f.lb_strategy.as_bytes());
             h.update(f.deploy_generation.to_le_bytes());
             h.update(f.speed_limit_kbps.to_le_bytes());
+            for addr in &f.ejected_upstream_addrs {
+                h.update(addr.as_bytes());
+            }
         }
         u64::from_le_bytes(h.finalize()[..8].try_into().unwrap())
     };

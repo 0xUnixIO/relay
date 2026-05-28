@@ -8,6 +8,7 @@ mod config;
 mod db;
 mod enroll;
 mod grpc;
+mod health_checker;
 mod http;
 mod maintenance;
 mod models;

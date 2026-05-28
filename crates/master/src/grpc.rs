@@ -653,8 +653,10 @@ async fn handle_inbound(
             NodePayload::UpstreamProbe(sample) => {
                 // fire-and-forget，忽略写 DB 错误（不影响控制流）
                 let db = db.clone();
+                let registry = registry.clone();
                 tokio::spawn(async move {
-                    let latency: Option<i64> = if sample.latency_us > 0 {
+                    let success = sample.latency_us > 0;
+                    let latency: Option<i64> = if success {
                         Some(sample.latency_us as i64)
                     } else {
                         None
@@ -671,6 +673,18 @@ async fn handle_inbound(
                         .bind(sample.ts_unix_ms)
                         .execute(&db)
                         .await;
+
+                        // 健康状态跟踪：状态变化时推送新配置
+                        if crate::health_checker::process_probe(
+                            &db,
+                            fid,
+                            &sample.upstream_addr,
+                            success,
+                        )
+                        .await
+                        {
+                            crate::health_checker::push_for_forward(&db, &registry, fid).await;
+                        }
                     }
                 });
             }
