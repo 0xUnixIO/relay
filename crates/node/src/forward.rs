@@ -155,7 +155,7 @@ const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const UPSTREAM_EJECT_COOLDOWN: Duration = Duration::from_secs(15);
 
 /// 上游本地健康状态（被动熔断 / passive outlier detection）。
-/// 索引与 routing_upstreams 对齐：数据面连接失败时立即熔断对应节点，
+/// 索引与 upstreams 对齐：数据面连接失败时立即熔断对应节点，
 /// 轮询时跳过；cooldown 到期后自动半开，下次成功连接即恢复。
 /// 纯被动设计——不依赖 master 下发、也不引入主动探测，TCP/UDP 通用，
 /// 因此不会用 TCP 探测误杀只监听 UDP 的上游。
