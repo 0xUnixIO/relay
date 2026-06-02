@@ -157,9 +157,9 @@ message ForwardConfig {
   uint64 speed_limit_kbps = 12;
   // When listen_addr is [::], set IPV6_V6ONLY so only v6 clients connect.
   bool v6_only = 13;
-  // 被驱逐的 upstream 地址列表：节点路由时跳过这些地址，但仍然探测它们以便感知恢复。
-  // 若所有 upstream 均被驱逐，节点降级为使用全部 upstream_addrs（保底不断流）。
-  repeated string ejected_upstream_addrs = 14;
+  // 已废弃（保留字段号以兼容）：上游剔除已下沉到 node 端数据面被动熔断，
+  // master 不再填充、node 不再消费。
+  repeated string ejected_upstream_addrs = 14 [deprecated = true];
 }
 
 enum Protocol {
