@@ -148,6 +148,61 @@ struct Counters {
     active_peers: Mutex<std::collections::HashMap<String, std::net::IpAddr>>,
 }
 
+/// 上游连接超时：超过此时长判定节点不可达，立即熔断并故障转移到下一个。
+/// 避免坏节点（SYN 无响应）把连接拖到操作系统默认超时（数十秒）。
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// 被动熔断窗口：节点连接失败后，此时间内从轮询中跳过（cooldown 到期自动半开）。
+const UPSTREAM_EJECT_COOLDOWN: Duration = Duration::from_secs(15);
+
+/// 上游本地健康状态（被动熔断 / passive outlier detection）。
+/// 索引与 routing_upstreams 对齐：数据面连接失败时立即熔断对应节点，
+/// 轮询时跳过；cooldown 到期后自动半开，下次成功连接即恢复。
+/// 纯被动设计——不依赖 master 下发、也不引入主动探测，TCP/UDP 通用，
+/// 因此不会用 TCP 探测误杀只监听 UDP 的上游。
+struct Health {
+    epoch: std::time::Instant,
+    /// 每个上游的熔断到期时间（相对 epoch 的毫秒数）；0 表示健康。
+    until_ms: Vec<AtomicU64>,
+}
+
+impl Health {
+    fn new(n: usize) -> Self {
+        Self {
+            epoch: std::time::Instant::now(),
+            until_ms: (0..n).map(|_| AtomicU64::new(0)).collect(),
+        }
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64
+    }
+
+    /// 节点当前是否可用于路由（健康，或熔断已到期进入半开）。
+    fn is_healthy(&self, idx: usize) -> bool {
+        self.until_ms
+            .get(idx)
+            .map(|u| u.load(Ordering::Relaxed) <= self.now_ms())
+            .unwrap_or(true)
+    }
+
+    /// 标记节点熔断，cooldown 内从轮询跳过。
+    fn mark_down(&self, idx: usize, cooldown: Duration) {
+        if let Some(u) = self.until_ms.get(idx) {
+            u.store(
+                self.now_ms() + cooldown.as_millis() as u64,
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    /// 标记节点恢复健康。
+    fn mark_up(&self, idx: usize) {
+        if let Some(u) = self.until_ms.get(idx) {
+            u.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TunnelSpec {
     /// Composite "<forward_id>:<hop_index>" key — uniquely identifies a
@@ -547,6 +602,8 @@ async fn start_tunnel(
     };
 
     let cursor = Arc::new(AtomicUsize::new(0));
+    // 上游健康状态，索引与 routing_upstreams 对齐，被动熔断用。
+    let health = Arc::new(Health::new(routing_upstreams.len()));
 
     // EMA 延迟缓存：按 probe_upstreams 索引，探测任务写入，路由通过 routing_to_probe 查询。
     // u64::MAX 表示暂无数据；alpha = 1/4：new_ema = (sample + old * 3) / 4
@@ -639,6 +696,7 @@ async fn start_tunnel(
                 latency_map,
                 is_entry,
                 conn_event_buf,
+                health,
             ))
         }
         Protocol::Udp => {
@@ -655,6 +713,7 @@ async fn start_tunnel(
                 rate_limiter,
                 spec.lb_strategy.clone(),
                 latency_map,
+                health,
             ))
         }
     };
@@ -678,6 +737,7 @@ async fn run_tcp(
     latency_map: Arc<RwLock<Vec<u64>>>,
     is_entry: bool,
     conn_event_buf: Arc<Mutex<Vec<NodeMessage>>>,
+    health: Arc<Health>,
 ) {
     loop {
         let permit = if let Some(ref s) = sem {
@@ -726,6 +786,7 @@ async fn run_tcp(
                         let rate_limiter = rate_limiter.clone();
                         let lb = lb_strategy.clone();
                         let lmap = latency_map.clone();
+                        let health = health.clone();
                         let conn_event_buf2 = conn_event_buf.clone();
                         counters.total.fetch_add(1, Ordering::Relaxed);
                         counters.active.fetch_add(1, Ordering::Relaxed);
@@ -734,7 +795,7 @@ async fn run_tcp(
                             // 记录连接开始时的字节数，用于计算本次连接的增量
                             let bytes_in_before  = counters.bytes_in.load(Ordering::Relaxed);
                             let bytes_out_before = counters.bytes_out.load(Ordering::Relaxed);
-                            let res = pipe_tcp(inbound, upstreams, &rtp, cursor, &counters, &cancel, &rate_limiter, &lb, &lmap).await;
+                            let res = pipe_tcp(inbound, upstreams, &rtp, cursor, &counters, &cancel, &rate_limiter, &lb, &lmap, &health).await;
                             counters.active.fetch_sub(1, Ordering::Relaxed);
 
                             if is_entry {
@@ -799,6 +860,7 @@ async fn pipe_tcp(
     rate_limiter: &Arc<Option<RateLimiter>>,
     lb_strategy: &str,
     latency_map: &RwLock<Vec<u64>>,
+    health: &Health,
 ) -> std::io::Result<()> {
     inbound.set_nodelay(true)?;
     apply_keepalive(&inbound)?;
@@ -832,21 +894,38 @@ async fn pipe_tcp(
     };
 
     let up = {
+        // 从 start 起轮转的完整顺序；健康节点优先尝试，熔断中的排到最后，
+        // 仅当所有节点都熔断时才兜底尝试——避免每次都先撞坏节点再超时。
+        let order = (0..n).map(|i| (start + i) % n);
+        let (mut attempt, mut downed): (Vec<usize>, Vec<usize>) =
+            order.partition(|&idx| health.is_healthy(idx));
+        attempt.append(&mut downed);
+
         let mut last_err: Option<std::io::Error> = None;
         let mut connected: Option<TcpStream> = None;
-        for i in 0..n {
-            let idx = (start + i) % n;
+        for idx in attempt {
             let upstream = upstreams[idx];
-            match TcpStream::connect(upstream).await {
-                Ok(stream) => {
+            match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, TcpStream::connect(upstream)).await
+            {
+                Ok(Ok(stream)) => {
                     stream.set_nodelay(true)?;
                     apply_keepalive(&stream)?;
+                    health.mark_up(idx);
                     connected = Some(stream);
                     break;
                 }
-                Err(e) => {
-                    tracing::warn!(%upstream, error = %e, "upstream connect failed, trying next");
+                Ok(Err(e)) => {
+                    tracing::warn!(%upstream, error = %e, "upstream connect failed, ejecting & trying next");
+                    health.mark_down(idx, UPSTREAM_EJECT_COOLDOWN);
                     last_err = Some(e);
+                }
+                Err(_) => {
+                    tracing::warn!(%upstream, timeout = ?UPSTREAM_CONNECT_TIMEOUT, "upstream connect timed out, ejecting & trying next");
+                    health.mark_down(idx, UPSTREAM_EJECT_COOLDOWN);
+                    last_err = Some(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "upstream connect timed out",
+                    ));
                 }
             }
         }
@@ -860,6 +939,10 @@ async fn pipe_tcp(
     #[cfg(not(target_os = "linux"))]
     pipe_tcp_copy(inbound, up, counters, cancel, rate_limiter).await
 }
+
+/// 半关闭 grace 窗口：一侧 EOF 后，另一侧最多再传 30s 尾部数据；
+/// 超时则放弃，确保 TcpStream 被 drop、socket 不会卡在 CLOSE-WAIT。
+const HALF_CLOSE_GRACE: Duration = Duration::from_secs(30);
 
 #[cfg(not(target_os = "linux"))]
 async fn pipe_tcp_copy(
@@ -907,9 +990,30 @@ async fn pipe_tcp_copy(
         Ok::<_, std::io::Error>(())
     };
 
+    // cancel 分支 + 半关闭 grace：任一方向先结束，另一方向最多再跑
+    // HALF_CLOSE_GRACE，防止对端不主动 close 导致 socket 永不释放。
+    let a = async {
+        tokio::select! {
+            _ = cancel.cancelled() => Ok::<_, std::io::Error>(()),
+            r = a => r,
+        }
+    };
+    let b = async {
+        tokio::select! {
+            _ = cancel.cancelled() => Ok::<_, std::io::Error>(()),
+            r = b => r,
+        }
+    };
+    tokio::pin!(a, b);
     tokio::select! {
-        _ = cancel.cancelled() => Ok(()),
-        r = async { tokio::try_join!(a, b).map(|_| ()) } => r,
+        r = &mut a => {
+            let _ = tokio::time::timeout(HALF_CLOSE_GRACE, &mut b).await;
+            r
+        }
+        r = &mut b => {
+            let _ = tokio::time::timeout(HALF_CLOSE_GRACE, &mut a).await;
+            r
+        }
     }
 }
 
@@ -926,10 +1030,20 @@ async fn pipe_tcp_splice(
 ) -> std::io::Result<()> {
     let a = splice_one_way(&inbound, &up, &counters.bytes_in, cancel, rate_limiter);
     let b = splice_one_way(&up, &inbound, &counters.bytes_out, cancel, rate_limiter);
+    tokio::pin!(a, b);
 
+    // 半关闭 grace：任一方向 EOF/Err 后，另一方向最多再跑 HALF_CLOSE_GRACE。
+    // 防止 upstream 主动关连接、client 不主动 close 时整条 task 永不退出，
+    // 导致 TcpStream 不 drop、socket 卡在 CLOSE-WAIT 泄漏。
     tokio::select! {
-        _ = cancel.cancelled() => Ok(()),
-        r = async { tokio::try_join!(a, b).map(|_| ()) } => r,
+        r = &mut a => {
+            let _ = tokio::time::timeout(HALF_CLOSE_GRACE, &mut b).await;
+            r
+        }
+        r = &mut b => {
+            let _ = tokio::time::timeout(HALF_CLOSE_GRACE, &mut a).await;
+            r
+        }
     }
 }
 
@@ -1018,6 +1132,7 @@ async fn run_udp(
     rate_limiter: Arc<Option<RateLimiter>>,
     lb_strategy: String,
     latency_map: Arc<RwLock<Vec<u64>>>,
+    health: Arc<Health>,
 ) {
     let sock = Arc::new(sock);
     let sessions: Arc<Mutex<HashMap<SocketAddr, UdpSession>>> =
@@ -1088,7 +1203,7 @@ async fn run_udp(
                     None
                 } else {
                     let n = upstreams.len();
-                    let up_idx = match lb_strategy.as_str() {
+                    let mut up_idx = match lb_strategy.as_str() {
                         "primary_backup" => 0,
                         "least_latency" | "best" => {
                             latency_map.read().ok().and_then(|m| {
@@ -1100,6 +1215,13 @@ async fn run_udp(
                         }
                         _ => cursor.fetch_add(1, Ordering::Relaxed) % n,
                     };
+                    // 被动熔断：选中节点若在熔断窗口内，顺延到下一个健康节点；
+                    // 全部熔断时保持原选择兜底。
+                    if !health.is_healthy(up_idx) {
+                        if let Some(alt) = (0..n).map(|k| (up_idx + k) % n).find(|&i| health.is_healthy(i)) {
+                            up_idx = alt;
+                        }
+                    }
                     let upstream = upstreams[up_idx];
                     let bind: SocketAddr = if upstream.is_ipv4() {
                         "0.0.0.0:0".parse().unwrap()
@@ -1109,6 +1231,7 @@ async fn run_udp(
                     match UdpSocket::bind(bind).await {
                         Ok(up) => match up.connect(upstream).await {
                             Ok(()) => {
+                                health.mark_up(up_idx);
                                 let up = Arc::new(up);
                                 let sess_cancel = CancellationToken::new();
                                 let sock2 = sock.clone();
@@ -1119,6 +1242,7 @@ async fn run_udp(
                                 counters.total.fetch_add(1, Ordering::Relaxed);
                                 counters.active.fetch_add(1, Ordering::Relaxed);
                                 let rate_limiter2 = rate_limiter.clone();
+                                let health2 = health.clone();
                                 tokio::spawn(async move {
                                     let mut rb = vec![0u8; 64 * 1024];
                                     loop {
@@ -1137,8 +1261,11 @@ async fn run_udp(
                                                     }
                                                 }
                                                 Err(e) => {
+                                                    // connected UDP 上的 recv 错误通常是 ICMP
+                                                    // 端口不可达（ECONNREFUSED），被动熔断该节点。
+                                                    health2.mark_down(up_idx, UPSTREAM_EJECT_COOLDOWN);
                                                     tracing::debug!(tunnel = %id2,
-                                                        error = %e, "udp upstream recv ended");
+                                                        error = %e, "udp upstream recv ended, ejecting");
                                                     break;
                                                 }
                                             }
@@ -1153,7 +1280,8 @@ async fn run_udp(
                                 Some(up)
                             }
                             Err(e) => {
-                                tracing::warn!(tunnel = %id, error = %e, "udp upstream connect failed");
+                                health.mark_down(up_idx, UPSTREAM_EJECT_COOLDOWN);
+                                tracing::warn!(tunnel = %id, error = %e, "udp upstream connect failed, ejecting");
                                 None
                             }
                         },
@@ -1184,4 +1312,58 @@ struct UdpSession {
     up: Arc<UdpSocket>,
     last_seen: Instant,
     cancel: CancellationToken,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 复现"不通的上游仍被轮询过去"：节点被熔断后必须从可用集合中跳过。
+    #[test]
+    fn ejected_upstream_is_skipped() {
+        let h = Health::new(3);
+        // 初始全部健康
+        assert!((0..3).all(|i| h.is_healthy(i)));
+        // 熔断节点 1
+        h.mark_down(1, Duration::from_secs(15));
+        assert!(h.is_healthy(0));
+        assert!(!h.is_healthy(1), "熔断的节点不应再被判为健康");
+        assert!(h.is_healthy(2));
+    }
+
+    /// 健康优先排序：熔断节点排到最后，仅作兜底。这正是 pipe_tcp 的选路顺序。
+    #[test]
+    fn unhealthy_nodes_ordered_last() {
+        let h = Health::new(4);
+        h.mark_down(0, Duration::from_secs(15));
+        h.mark_down(2, Duration::from_secs(15));
+        let n = 4usize;
+        let start = 0usize;
+        let order = (0..n).map(|i| (start + i) % n);
+        let (mut attempt, mut downed): (Vec<usize>, Vec<usize>) =
+            order.partition(|&idx| h.is_healthy(idx));
+        attempt.append(&mut downed);
+        // 健康的 1、3 先于熔断的 0、2
+        assert_eq!(attempt, vec![1, 3, 0, 2]);
+    }
+
+    /// cooldown 到期后自动半开恢复（无需后台任务）。
+    #[test]
+    fn cooldown_expires_to_half_open() {
+        let h = Health::new(1);
+        h.mark_down(0, Duration::from_millis(50));
+        assert!(!h.is_healthy(0));
+        std::thread::sleep(Duration::from_millis(80));
+        assert!(h.is_healthy(0), "cooldown 到期后应自动半开");
+    }
+
+    /// mark_up 立即恢复（成功连接路径）。
+    #[test]
+    fn mark_up_restores_immediately() {
+        let h = Health::new(2);
+        h.mark_down(0, Duration::from_secs(60));
+        assert!(!h.is_healthy(0));
+        h.mark_up(0);
+        assert!(h.is_healthy(0));
+    }
 }
