@@ -756,10 +756,37 @@ async fn delete_user(
             "至少要保留一个 admin",
         ));
     }
+    // forwards 对 user_tunnels 是 ON DELETE RESTRICT，而 users→user_tunnels
+    // 是 CASCADE。若用户名下还有转发，直接删 users 会被外键拦下，故须先删转发。
+    // 提前收集涉及的节点，删除后推送配置以释放端口。
+    let nodes: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT fp.node_id FROM forward_ports fp
+           JOIN forwards f      ON f.id = fp.forward_id
+           JOIN user_tunnels ut ON ut.id = f.user_tunnel_id
+          WHERE ut.user_id = $1",
+    )
+    .bind(id)
+    .fetch_all(&s.db)
+    .await?;
+
+    let mut tx = s.db.begin().await?;
+    sqlx::query(
+        "DELETE FROM forwards
+          WHERE user_tunnel_id IN (SELECT id FROM user_tunnels WHERE user_id = $1)",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    // user_tunnels / group_members 通过 users 的 ON DELETE CASCADE 自动清理。
     sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(id)
-        .execute(&s.db)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
+
+    for (nid,) in &nodes {
+        s.registry.push_config(&s.db, nid).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1909,22 +1936,48 @@ async fn update_tunnel(
 }
 
 async fn delete_tunnel(State(s): State<AppState>, Path(id): Path<i64>) -> ApiResult<StatusCode> {
-    let in_use: (i64,) = sqlx::query_as("SELECT count(*) FROM user_tunnels WHERE tunnel_id = $1")
-        .bind(id)
-        .fetch_one(&s.db)
-        .await?;
-    if in_use.0 > 0 {
+    // 拦截以"实际转发"为准：只要还有转发使用此隧道就禁止删除。
+    // 仅有用户绑定（user_tunnels，转发数为 0，通常来自套餐/组授权）时，
+    // 允许级联清理这些空绑定后删除隧道。
+    let fwd_count: (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM forwards f
+           JOIN user_tunnels ut ON ut.id = f.user_tunnel_id
+          WHERE ut.tunnel_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&s.db)
+    .await?;
+    if fwd_count.0 > 0 {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "已有用户绑定此隧道，无法删除",
+            "仍有转发使用此隧道，无法删除；请先删除相关转发",
         ));
     }
+    // 提前收集涉及的节点，删除后推送配置。
+    let nodes = nodes_for_tunnel(&s.db, id).await?;
+
+    let mut tx = s.db.begin().await?;
+    // group_tunnels / user_tunnels 对 tunnels 是 ON DELETE RESTRICT，须手动先删；
+    // tunnel_hops 通过 ON DELETE CASCADE 自动清理。
+    sqlx::query("DELETE FROM group_tunnels WHERE tunnel_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM user_tunnels WHERE tunnel_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     let res = sqlx::query("DELETE FROM tunnels WHERE id = $1")
         .bind(id)
-        .execute(&s.db)
+        .execute(&mut *tx)
         .await?;
     if res.rows_affected() == 0 {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "隧道不存在"));
+    }
+    tx.commit().await?;
+
+    for nid in &nodes {
+        s.registry.push_config(&s.db, nid).await;
     }
     Ok(StatusCode::NO_CONTENT)
 }
