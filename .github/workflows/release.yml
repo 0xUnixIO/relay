@@ -62,6 +62,16 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             cross: true
+          # musl 静态产物：供 Alpine / OpenRC 等 musl 系统使用。
+          # 仅打包 relay-node（master 在 Alpine 上不受支持）。
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+            node_only: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+            node_only: true
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -88,10 +98,15 @@ jobs:
       - name: Build
         shell: bash
         run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} --bin relay-master --bin relay-node
+          if [ "${{ matrix.node_only }}" = "true" ]; then
+            BINS="--bin relay-node"
           else
-            cargo build --release --target ${{ matrix.target }} --bin relay-master --bin relay-node
+            BINS="--bin relay-master --bin relay-node"
+          fi
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} $BINS
+          else
+            cargo build --release --target ${{ matrix.target }} $BINS
           fi
 
       - name: Package archive
@@ -102,18 +117,25 @@ jobs:
           TARGET="${{ matrix.target }}"
           mkdir -p dist
 
+          ARCHIVES=()
+
           NODE="relay-node-${TAG}-${TARGET}"
           mkdir -p "dist/${NODE}"
           cp "target/${TARGET}/release/relay-node" "dist/${NODE}/"
           tar -czf "dist/${NODE}.tar.gz" -C dist "${NODE}"
+          ARCHIVES+=("${NODE}.tar.gz")
 
-          MASTER="relay-master-${TAG}-${TARGET}"
-          mkdir -p "dist/${MASTER}"
-          cp "target/${TARGET}/release/relay-master" "dist/${MASTER}/"
-          cp README.md ROADMAP.md "dist/${MASTER}/" 2>/dev/null || true
-          tar -czf "dist/${MASTER}.tar.gz" -C dist "${MASTER}"
+          # node_only 目标（musl）不打包 master。
+          if [ "${{ matrix.node_only }}" != "true" ]; then
+            MASTER="relay-master-${TAG}-${TARGET}"
+            mkdir -p "dist/${MASTER}"
+            cp "target/${TARGET}/release/relay-master" "dist/${MASTER}/"
+            cp README.md ROADMAP.md "dist/${MASTER}/" 2>/dev/null || true
+            tar -czf "dist/${MASTER}.tar.gz" -C dist "${MASTER}"
+            ARCHIVES+=("${MASTER}.tar.gz")
+          fi
 
-          cd dist && shasum -a 256 relay-node-*.tar.gz relay-master-*.tar.gz > SHA256SUMS.part
+          cd dist && shasum -a 256 "${ARCHIVES[@]}" > SHA256SUMS.part
 
       - uses: actions/upload-artifact@v7
         with:

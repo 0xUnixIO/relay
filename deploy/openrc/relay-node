@@ -1,0 +1,39 @@
+#!/sbin/openrc-run
+# Relay forwarding agent —— OpenRC 服务（Alpine / OpenRC 系统）。
+#
+# 对应 deploy/systemd/relay-node.service。systemd 单元里的沙箱加固
+# （ProtectSystem / NoNewPrivileges / MemoryDenyWriteExecute 等）在 OpenRC
+# 下没有等价指令，故此处通过两点实现最小权限：
+#   1. 以专用非特权用户 relay 运行；
+#   2. 由 install-node.sh 对二进制执行 setcap cap_net_bind_service=+ep，
+#      使其无需 root 即可绑定 <1024 端口。
+
+name="relay-node"
+description="Relay forwarding agent"
+
+RELAY_NODE_DATA="/var/lib/relay-node"
+RELAY_NODE_ENV="/etc/relay-node/relay-node.env"
+
+command="${RELAY_NODE_DATA}/relay-node"
+command_user="relay:relay"
+supervisor="supervise-daemon"
+respawn_delay=3
+# 对应 systemd LimitNOFILE=1048576。
+rc_ulimit="-n 1048576"
+
+depend() {
+	need net
+	after firewall
+}
+
+start_pre() {
+	# 持久化状态目录（PKI 位于 ${RELAY_NODE_DATA}/pki）。
+	checkpath -d -m 0700 -o relay:relay "$RELAY_NODE_DATA"
+	# 加载环境变量（对应 systemd EnvironmentFile）。set -a 使其自动导出，
+	# 供 supervise-daemon 拉起的子进程继承。
+	if [ -f "$RELAY_NODE_ENV" ]; then
+		set -a
+		. "$RELAY_NODE_ENV"
+		set +a
+	fi
+}

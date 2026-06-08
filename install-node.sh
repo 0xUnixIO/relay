@@ -85,6 +85,7 @@ BIN_LINK="/usr/local/bin/$BIN_NAME"
   # Re-exec under sudo. Persist the script to a tempfile first so sudo
   # can read it even when invoked via `bash <(curl …)` (where $0 is
   # /dev/fd/N which sudo's default closefrom would drop).
+  command -v sudo >/dev/null 2>&1 || die "must run as root (no sudo found; re-run as root)"
   tmp="$(mktemp /tmp/relay-install-node.XXXXXX.sh)"
   case "$0" in
     /dev/fd/*) cat "$0" > "$tmp" ;;
@@ -98,13 +99,106 @@ BIN_LINK="/usr/local/bin/$BIN_NAME"
 # it up on exit if we were the elevated process.
 case "$0" in /tmp/relay-install-node.*.sh) trap 'rm -f "$0"' EXIT ;; esac
 
+# ── 发行版 / libc / 包管理器 / init 系统探测 ───────────────────────────────────
+OS_ID=""
+[[ -r /etc/os-release ]] && OS_ID="$(. /etc/os-release 2>/dev/null; echo "${ID:-}")"
+
+# libc：Alpine 等使用 musl，需要对应的 musl 静态二进制（glibc 产物跑不起来）。
+LIBC="gnu"
+if [[ "$OS_ID" == "alpine" ]] || ldd --version 2>&1 | grep -qi musl \
+   || ls /lib/ld-musl-* >/dev/null 2>&1; then
+  LIBC="musl"
+fi
+
+# 包管理器
+PKG=""
+if   command -v apt-get >/dev/null 2>&1; then PKG="apt"
+elif command -v apk     >/dev/null 2>&1; then PKG="apk"
+fi
+
+# init 系统：systemd 优先，其次 OpenRC（Alpine）。
+INIT=""
+if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+  INIT="systemd"
+elif command -v rc-service >/dev/null 2>&1 || command -v openrc >/dev/null 2>&1; then
+  INIT="openrc"
+elif command -v systemctl >/dev/null 2>&1; then
+  INIT="systemd"
+fi
+
+# ── 服务管理抽象（systemd / OpenRC）────────────────────────────────────────────
+svc_unit_path() {
+  case "$INIT" in
+    systemd) echo "/etc/systemd/system/${UNIT_NAME}.service" ;;
+    openrc)  echo "/etc/init.d/${UNIT_NAME}" ;;
+  esac
+}
+svc_is_active() {
+  case "$INIT" in
+    systemd) systemctl is-active --quiet "$UNIT_NAME" 2>/dev/null ;;
+    openrc)  rc-service "$UNIT_NAME" status >/dev/null 2>&1 ;;
+    *)       return 1 ;;
+  esac
+}
+svc_stop() {
+  case "$INIT" in
+    systemd) systemctl stop "$UNIT_NAME" ;;
+    openrc)  rc-service "$UNIT_NAME" stop 2>/dev/null || true ;;
+  esac
+}
+svc_start() {
+  case "$INIT" in
+    systemd) systemctl start "$UNIT_NAME" ;;
+    openrc)  rc-service "$UNIT_NAME" start ;;
+  esac
+}
+svc_enable_start() {
+  case "$INIT" in
+    systemd) systemctl enable --now "$UNIT_NAME" ;;
+    openrc)  rc-update add "$UNIT_NAME" default >/dev/null 2>&1 || true
+             rc-service "$UNIT_NAME" restart ;;
+  esac
+}
+svc_disable() {
+  case "$INIT" in
+    systemd) systemctl disable --now "$UNIT_NAME" 2>/dev/null || true ;;
+    openrc)  rc-service "$UNIT_NAME" stop 2>/dev/null || true
+             rc-update del "$UNIT_NAME" default 2>/dev/null || true ;;
+  esac
+}
+svc_status() {
+  case "$INIT" in
+    systemd) systemctl --no-pager status "$UNIT_NAME" | head -15 || true ;;
+    openrc)  rc-service "$UNIT_NAME" status || true ;;
+  esac
+}
+svc_reload_daemon() {
+  case "$INIT" in
+    systemd) systemctl daemon-reload ;;
+    openrc)  : ;;
+  esac
+}
+svc_install_unit() {
+  case "$INIT" in
+    systemd)
+      curl -fsSL "${GH_RAW}/$REPO/$DEPLOY_REF/deploy/systemd/${UNIT_NAME}.service" \
+           -o "/etc/systemd/system/${UNIT_NAME}.service"
+      ;;
+    openrc)
+      curl -fsSL "${GH_RAW}/$REPO/$DEPLOY_REF/deploy/openrc/${UNIT_NAME}" \
+           -o "/etc/init.d/${UNIT_NAME}"
+      chmod 0755 "/etc/init.d/${UNIT_NAME}"
+      ;;
+  esac
+}
+
 if [[ "$UNINSTALL" -eq 1 ]]; then
   log "stopping $UNIT_NAME"
-  systemctl disable --now "$UNIT_NAME" 2>/dev/null || true
-  rm -f "/etc/systemd/system/${UNIT_NAME}.service"
+  svc_disable
+  rm -f "$(svc_unit_path)"
   rm -f "$BIN_LINK"
-  systemctl daemon-reload
-  log "removed binary + systemd units"
+  svc_reload_daemon
+  log "removed binary + service unit"
 
   PURGE=0
   if { [[ -t 0 ]] || [[ -e /dev/tty ]]; }; then
@@ -123,7 +217,11 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     rm -rf "$ETC_DIR" /var/lib/relay-node
     if id relay >/dev/null 2>&1; then
       log "removing system user 'relay'"
-      userdel relay 2>/dev/null || true
+      if command -v userdel >/dev/null 2>&1; then
+        userdel relay 2>/dev/null || true
+      else
+        deluser relay 2>/dev/null || true   # BusyBox (Alpine)
+      fi
     fi
     log "purged. Nothing left on disk."
   fi
@@ -133,48 +231,86 @@ fi
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 case "$OS-$ARCH" in
-  Linux-x86_64)              TARGET="x86_64-unknown-linux-gnu" ;;
-  Linux-aarch64|Linux-arm64) TARGET="aarch64-unknown-linux-gnu" ;;
+  Linux-x86_64)              ARCH_T="x86_64" ;;
+  Linux-aarch64|Linux-arm64) ARCH_T="aarch64" ;;
   *) die "unsupported platform: $OS $ARCH" ;;
 esac
+# libc 决定下载 glibc 还是 musl 产物（musl 供 Alpine 等）。
+TARGET="${ARCH_T}-unknown-linux-${LIBC}"
 
 GH="${MIRROR}https://github.com"
 GH_API="https://api.github.com"
 GH_RAW="${MIRROR}https://raw.githubusercontent.com"
 
 ensure_base_pkgs() {
+  # 抽象需求（与具体包名解耦），再按包管理器映射安装。
   local need=()
   command -v curl       >/dev/null || need+=(curl)
   command -v tar        >/dev/null || need+=(tar)
-  command -v sha256sum  >/dev/null || need+=(coreutils)
+  command -v sha256sum  >/dev/null || need+=(sha256sum)
   [[ -e /etc/ssl/certs/ca-certificates.crt ]] || need+=(ca-certificates)
+  # OpenRC 下以非 root 绑定 <1024 端口依赖 setcap（libcap）。
+  [[ "$INIT" == "openrc" ]] && { command -v setcap >/dev/null || need+=(setcap); }
   [[ ${#need[@]} -eq 0 ]] && return 0
-  if [[ "$EUID" -ne 0 ]] || ! command -v apt-get >/dev/null; then
-    return 0
-  fi
-  log "安装基础依赖: ${need[*]}"
-  apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${need[@]}" >/dev/null
+  [[ "$EUID" -eq 0 ]] || return 0
+
+  local pkgs=()
+  case "$PKG" in
+    apt)
+      for n in "${need[@]}"; do case "$n" in
+        sha256sum) pkgs+=(coreutils) ;;
+        setcap)    pkgs+=(libcap2-bin) ;;
+        *)         pkgs+=("$n") ;;
+      esac; done
+      log "安装基础依赖: ${pkgs[*]}"
+      apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${pkgs[@]}" >/dev/null
+      ;;
+    apk)
+      for n in "${need[@]}"; do case "$n" in
+        sha256sum) pkgs+=(coreutils) ;;   # BusyBox 通常已自带，缺失时兜底
+        setcap)    pkgs+=(libcap) ;;
+        *)         pkgs+=("$n") ;;
+      esac; done
+      log "安装基础依赖: ${pkgs[*]}"
+      apk add --no-cache "${pkgs[@]}" >/dev/null
+      ;;
+    *) return 0 ;;
+  esac
 }
 ensure_base_pkgs
 
 command -v curl       >/dev/null || die "curl is required"
 command -v tar        >/dev/null || die "tar is required"
 command -v sha256sum  >/dev/null || die "sha256sum is required (coreutils)"
-command -v systemctl  >/dev/null || die "systemd is required"
+[[ -n "$INIT" ]] || die "no supported init system found (need systemd or OpenRC)"
+
+# 从扁平 JSON 中取字符串字段。优先 python3（健壮），缺失时（如 Alpine 默认
+# 无 python3）回退到 grep/sed —— setup JSON 各字段值均为无引号转义的简单串。
+json_str() { # $1=json  $2=key
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$1" | python3 -c "import sys,json; print(json.load(sys.stdin).get('$2',''))"
+  else
+    printf '%s' "$1" \
+      | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
+      | head -1 | sed -E "s/.*:[[:space:]]*\"([^\"]*)\"/\1/"
+  fi
+}
 
 if [[ -n "$SETUP_URL" ]]; then
   log "fetching setup parameters"
   SETUP_JSON="$(curl -fsSL "$SETUP_URL")" || die "无法获取安装链接，请检查链接是否有效"
-  MASTER="$(          echo "$SETUP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['master'])")"
-  ENROLL_ENDPOINT="$( echo "$SETUP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['enroll'])")"
-  NODE_ID="$(         echo "$SETUP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['node_id'])")"
-  NODE_TOKEN="$(      echo "$SETUP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")"
-  NODE_CA_CERT_B64="$(echo "$SETUP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['ca_cert'])")"
+  MASTER="$(          json_str "$SETUP_JSON" master)"
+  ENROLL_ENDPOINT="$( json_str "$SETUP_JSON" enroll)"
+  NODE_ID="$(         json_str "$SETUP_JSON" node_id)"
+  NODE_TOKEN="$(      json_str "$SETUP_JSON" token)"
+  NODE_CA_CERT_B64="$(json_str "$SETUP_JSON" ca_cert)"
 fi
 
 if [[ "$VERSION" == "latest" ]]; then
   if [[ "$INCLUDE_PRERELEASE" -eq 1 ]]; then
+    command -v python3 >/dev/null 2>&1 \
+      || die "--prerelease 需要 python3（或改用 --version <tag> 指定具体版本）"
     VERSION="$(curl -fsSL "${GH_API}/repos/$REPO/releases?per_page=20" \
       | python3 -c "import sys,json; rs=[r for r in json.load(sys.stdin) if r['prerelease']]; print(rs[0]['tag_name'] if rs else '')")"
     [[ -n "$VERSION" ]] || die "failed to resolve latest pre-release"
@@ -207,15 +343,21 @@ DIR="$TMP/relay-node-${VERSION}-${TARGET}"
 [[ -f "$DIR/$BIN_NAME" ]] || die "$BIN_NAME not found in archive"
 
 RESTART=0
-if systemctl is-active --quiet "$UNIT_NAME" 2>/dev/null; then
+if svc_is_active; then
   log "stopping running $UNIT_NAME before upgrade"
-  systemctl stop "$UNIT_NAME"
+  svc_stop
   RESTART=1
 fi
 
 if ! id relay >/dev/null 2>&1; then
   log "creating system user 'relay'"
-  useradd --system --no-create-home --shell /usr/sbin/nologin relay
+  if command -v useradd >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin relay
+  else
+    # BusyBox (Alpine)：adduser 语义不同，需先建组。
+    addgroup -S relay 2>/dev/null || true
+    adduser -S -D -H -s /sbin/nologin -G relay relay
+  fi
 fi
 
 log "installing $DATA_DIR/$BIN_NAME"
@@ -227,6 +369,17 @@ chown relay:relay "$DATA_DIR/$BIN_NAME.new"
 mv -f "$DATA_DIR/$BIN_NAME.new" "$DATA_DIR/$BIN_NAME"
 ln -sfn "$DATA_DIR/$BIN_NAME" "${BIN_LINK}.new"
 mv -Tf "${BIN_LINK}.new" "$BIN_LINK"
+
+# OpenRC 无 systemd 的 AmbientCapabilities，用文件 capability 让非 root
+# 的 relay 用户也能绑定 <1024 端口。setcap 须在最终 mv 之后执行。
+if [[ "$INIT" == "openrc" ]]; then
+  if command -v setcap >/dev/null 2>&1; then
+    setcap 'cap_net_bind_service=+ep' "$DATA_DIR/$BIN_NAME" \
+      || warn "setcap 失败：绑定 <1024 端口可能需要 root"
+  else
+    warn "未找到 setcap（libcap），绑定 <1024 端口可能失败"
+  fi
+fi
 
 mkdir -p "$ETC_DIR"
 
@@ -276,19 +429,21 @@ fi
 DEPLOY_REF="$VERSION"
 case "$DEPLOY_REF" in v*) ;; *) DEPLOY_REF="main" ;; esac
 
-log "installing systemd unit"
-curl -fsSL "${GH_RAW}/$REPO/$DEPLOY_REF/deploy/systemd/${UNIT_NAME}.service" \
-     -o "/etc/systemd/system/${UNIT_NAME}.service"
-
-systemctl daemon-reload
+log "installing $INIT service unit"
+svc_install_unit
+svc_reload_daemon
 
 if [[ "$START" -eq 1 ]]; then
   log "enabling + starting $UNIT_NAME"
-  systemctl enable --now "$UNIT_NAME"
+  svc_enable_start
   sleep 1
-  systemctl --no-pager status "$UNIT_NAME" | head -15 || true
+  svc_status
 elif [[ "$RESTART" -eq 1 ]]; then
-  systemctl start "$UNIT_NAME"
+  svc_start
 fi
 
-log "完成。日志查看：journalctl -u $UNIT_NAME -f"
+if [[ "$INIT" == "systemd" ]]; then
+  log "完成。日志查看：journalctl -u $UNIT_NAME -f"
+else
+  log "完成。日志查看：rc-service $UNIT_NAME status  （详细日志见 /var/log/messages）"
+fi
